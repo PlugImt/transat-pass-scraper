@@ -1,0 +1,22 @@
+services:
+  scraper:
+    build: .
+    container_name: transat-pass-scraper
+    environment:
+      - SCRAPER_USERNAME=${SCRAPER_USERNAME}
+      - SCRAPER_PASSWORD=${SCRAPER_PASSWORD}
+      - HEADLESS=true
+      - TIMEOUT=15
+      - OUTPUT_DIR=/app/data
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./data:/app/data
+      - ./logs:/var/log/scraper
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    ports:
+      - "8080:8080"  # For health checks.
