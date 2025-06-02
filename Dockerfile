@@ -53,6 +53,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY scraper.py .
 COPY config.py .
 COPY run_scraper.py .
+COPY .env .
 
 # Copy cron job file
 COPY crontab /etc/cron.d/scraper-cron
