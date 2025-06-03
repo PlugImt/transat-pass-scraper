@@ -21,7 +21,7 @@ class TransatPassScraper:
         self.driver = None
         self.setup_logging()
         self.setup_driver(headless)
-    
+
     def setup_logging(self):
         """Setup logging configuration"""
         logging.basicConfig(
@@ -29,7 +29,7 @@ class TransatPassScraper:
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
         self.logger = logging.getLogger(__name__)
-    
+
     def setup_driver(self, headless):
         """Setup Chrome WebDriver with options"""
         chrome_options = Options()
@@ -87,7 +87,7 @@ class TransatPassScraper:
         except TimeoutException:
             self.logger.error(f"Timeout waiting for element: {locator_value}")
             return False
-    
+        
     def step1_select_auth_mode(self):
         """
         Step 1: Navigate to login page and select authentication mode
@@ -170,8 +170,10 @@ class TransatPassScraper:
                 if msg_elem.is_displayed() and msg_elem.text.strip():
                     self.logger.error(f"Login error message displayed: {msg_elem.text.strip()}. Current URL: {self.driver.current_url}")
                     return False
-            except Exception as e:
-                self.logger.info(f"No login error message element found after submit. Current URL: {self.driver.current_url}. Exception: {e}")
+            except NoSuchElementException:
+                self.logger.info("No login error message element found after submit (NoSuchElementException).")
+            except Exception:
+                self.logger.info("No login error message element found after submit.")
             
             # Wait for URL to change from CAS login page
             for i in range(20):  # up to 10 seconds
@@ -205,8 +207,10 @@ class TransatPassScraper:
                         msg_elem = self.driver.find_element(By.XPATH, '//*[@id="msg"]')
                         if msg_elem.is_displayed() and msg_elem.text.strip():
                             self.logger.error(f"Login error message displayed: {msg_elem.text.strip()}. Current URL: {self.driver.current_url}")
-                    except Exception as e:
-                        self.logger.info(f"No login error message element found after all attempts. Exception: {e}")
+                    except NoSuchElementException:
+                        self.logger.info("No login error message element found after all attempts (NoSuchElementException).")
+                    except Exception:
+                        self.logger.info("No login error message element found after all attempts.")
                     return False
             
             return True
@@ -238,15 +242,16 @@ class TransatPassScraper:
             self.logger.error(f"Error in step2b_handle_saml_post_sso: {e}")
             return False
 
-    def step3_navigate_to_search(self, navigation_button_selector=None):
+    def step3_navigate_to_search(self):
         """
-        Step 3: Navigate to specific page by clicking a button
-        
-        Args:
-            navigation_button_selector (str): CSS selector or XPath for the navigation button
+        Step 3: Navigate to Annuaire/Annuaires search page, go inside MANavigationBase frame, then MARecherche frame, and download its content.
         """
+        from datetime import datetime
+        import os
         try:
-            self.logger.info("Step 3: Navigating to search page")
+            self.logger.info("Step 3: Navigating directly to Annuaire/Annuaires search page")
+            self.driver.get("https://pass.imt-atlantique.fr/OpDotNet/Noyau/Default.aspx?")
+            time.sleep(4)
             
             # Wait for the page to load after login and for the correct URL
             for i in range(20):  # up to ~10 seconds
@@ -258,189 +263,151 @@ class TransatPassScraper:
                 current_url = self.driver.current_url
                 self.logger.error(f"Did not reach Default.aspx page after login. Last URL: {current_url}")
                 return False
-            self.logger.info(f"On Default.aspx page ({self.driver.current_url}), proceeding to click Annuaire/Annuaires button")
-            # Try to click the Annuaire/Annuaires button by XPath for <a id="242">
+            
+            # Use JS to set window.parent.content.location to Annuaire Accueil
+            js = ("window.parent.content.location = '/OpDotNet/Eplug/Annuaire/Accueil.aspx?IdApplication=142&TypeAcces=Utilisateur&IdLien=242&groupe=31';")
+            self.driver.execute_script(js)
+            self.logger.info("Executed JS to set window.parent.content.location to Annuaire Accueil page.")
+
             try:
-                annuaire_btn = self.driver.find_element(By.XPATH, '//a[@id="242"]')
-                self.driver.execute_script("arguments[0].click();", annuaire_btn)
-                self.logger.info("Clicked Annuaire/Annuaires button by XPath and JS click.")
-                time.sleep(2)
-                return True
-            except Exception as e:
-                self.logger.error(f"Could not click Annuaire/Annuaires button: {e}. Current URL: {self.driver.current_url}")
-                # As fallback, try to directly navigate to the Annuaire page if possible
+                self.driver.switch_to.default_content()
+                self.driver.switch_to.frame(3) # KEEP THE 3 HARD-CODED INDEX!!!!!!!
+                self.logger.info("Switched to content frame (index 3)")
+
+                # Switch to MANavigationBase frame
                 try:
-                    self.logger.info("Trying direct navigation to Annuaire/Annuaires page as fallback.")
-                    self.driver.get("https://pass.imt-atlantique.fr/OpDotNet/Eplug/Annuaire/Accueil.aspx?IdApplication=142&TypeAcces=Utilisateur&IdLien=242&groupe=31")
-                    time.sleep(2)
-                    return True
-                except Exception as e2:
-                    self.logger.error(f"Direct navigation to Annuaire page failed: {e2}. Current URL: {self.driver.current_url}")
+                    navigation_base_frame = WebDriverWait(self.driver, self.timeout).until(
+                        EC.presence_of_element_located((By.NAME, "MANavigationBase"))
+                    )
+                    self.driver.switch_to.frame(navigation_base_frame)
+                    self.logger.info("Switched to MANavigationBase frame")
+                    # Log the HTML content of MANavigationBase frame for debugging
+                    try:
+                        navigation_base_html = self.driver.execute_script("return document.documentElement.outerHTML;")
+                        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        navigation_base_path = os.path.join('data', f'MANavigationBase_debug_{ts}.html')
+                        with open(navigation_base_path, 'w', encoding='utf-8') as f:
+                            f.write(navigation_base_html)
+                        self.logger.info(f"Saved HTML of MANavigationBase frame to: {navigation_base_path}")
+                    except Exception as e:
+                        self.logger.error(f"Could not save HTML of MANavigationBase frame: {e}")
+                    # Retry switching to MARecherche frame
+                    for attempt in range(5):
+                        try:
+                            recherche_frame = WebDriverWait(self.driver, self.timeout).until(
+                                EC.presence_of_element_located((By.NAME, "MARecherche"))
+                            )
+                            self.driver.switch_to.frame(recherche_frame)
+                            self.logger.info("Switched to MARecherche frame")
+                            # Retrieve the HTML content of MARecherche frame
+                            try:
+                                html = self.driver.execute_script("return document.documentElement.outerHTML;")
+                                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                                html_path = os.path.join('data', f'MARecherche_debug_{ts}.html')
+                                with open(html_path, 'w', encoding='utf-8') as f:
+                                    f.write(html)
+                                self.logger.info(f"Saved HTML of MARecherche frame to: {html_path}")
+                                return True
+                            except Exception as e:
+                                self.logger.error(f"Could not retrieve HTML of MARecherche frame: {e}")
+                                return False
+                        except Exception as e:
+                            self.logger.warning(f"Attempt {attempt + 1}: Could not switch to MARecherche frame: {e}")
+                            time.sleep(1)  # Wait before retrying
+                    self.logger.error("Failed to switch to MARecherche frame after multiple attempts")
                     return False
+                except Exception as e:
+                    self.logger.error(f"Could not switch to MANavigationBase frame: {e}")
+                    return False
+            except Exception as e:
+                self.logger.error(f"Error switching frames in step 3: {e}. Current URL: {self.driver.current_url if self.driver else 'driver not initialized'}")
+                return False
         except Exception as e:
-            self.logger.error(f"Error in step 3: {e}. Current URL: {self.driver.current_url if self.driver else 'driver not initialized'}")
+            self.logger.error(f"Error in step 3 (outer): {e}. Current URL: {self.driver.current_url if self.driver else 'driver not initialized'}")
             return False
-    
+
     def step4_search_person(self, first_name, last_name):
         """
-        Step 4: Enter name and surname in search fields
+        Step 4: Enter name and surname in search fields (Annuaire)
         
         Args:
             first_name (str): First name to search
             last_name (str): Last name to search
         """
         try:
-            self.logger.info("Step 4: Entering search criteria")
-            
-            # Common field selectors for name search
-            first_name_selectors = [
-                "input[name*='first']",
-                "input[name*='prenom']",
-                "input[name*='fname']",
-                "input[id*='first']",
-                "input[id*='prenom']",
-                "#firstName",
-                "#prenom"
-            ]
-            
-            last_name_selectors = [
-                "input[name*='last']",
-                "input[name*='nom']",
-                "input[name*='lname']",
-                "input[id*='last']",
-                "input[id*='nom']",
-                "#lastName",
-                "#nom"
-            ]
-            
-            # Try to fill first name
-            first_name_filled = False
-            for selector in first_name_selectors:
-                try:
-                    if self.wait_and_send_keys(By.CSS_SELECTOR, selector, first_name):
-                        first_name_filled = True
-                        break
-                except:
-                    continue
-            
-            # Try to fill last name
-            last_name_filled = False
-            for selector in last_name_selectors:
-                try:
-                    if self.wait_and_send_keys(By.CSS_SELECTOR, selector, last_name):
-                        last_name_filled = True
-                        break
-                except:
-                    continue
-            
-            # If we couldn't find separate fields, try a single search field
-            if not (first_name_filled and last_name_filled):
-                single_search_selectors = [
-                    "input[type='search']",
-                    "input[name*='search']",
-                    "input[name*='query']",
-                    "#search",
-                    ".search-input"
-                ]
-                
-                full_name = f"{first_name} {last_name}"
-                for selector in single_search_selectors:
-                    try:
-                        if self.wait_and_send_keys(By.CSS_SELECTOR, selector, full_name):
-                            self.logger.info("Filled single search field")
-                            break
-                    except:
-                        continue
-            
-            # Click search button
-            search_button_selectors = [
-                "input[type='submit']",
-                "button[type='submit']",
-                "input[value*='Search']",
-                "button:contains('Search')",
-                "input[value*='Recherch']",
-                "button:contains('Recherch')",
-                "#search-button",
-                ".search-button"
-            ]
-            
-            search_clicked = False
-            for selector in search_button_selectors:
-                try:
-                    if self.wait_and_click(By.CSS_SELECTOR, selector):
-                        search_clicked = True
-                        self.logger.info("Search initiated")
-                        break
-                except:
-                    continue
-            
-            if not search_clicked:
-                self.logger.warning("Could not find search button")
-            
-            time.sleep(3)  # Wait for search results
+            self.logger.info("Step 4: Entering search criteria (Annuaire)")
+
+            # Enter search criteria directly
+            full_name = f"{first_name} {last_name}"
+            search_input_xpath = '//*[@id="txtRecherche"]'
+            search_button_xpath = '//*[@id="btnRecherche"]'
+
+            try:
+                search_input = WebDriverWait(self.driver, self.timeout).until(
+                    EC.presence_of_element_located((By.XPATH, search_input_xpath))
+                )
+                search_input.clear()
+                search_input.send_keys(full_name)
+                self.logger.info(f"Filled search field with: {full_name}")
+            except Exception as e:
+                self.logger.error(f"Could not find or fill search field: {e}. Current URL: {self.driver.current_url}")
+                return False
+
+            # Click the search button
+            try:
+                search_button = WebDriverWait(self.driver, self.timeout).until(
+                    EC.element_to_be_clickable((By.XPATH, search_button_xpath))
+                )
+                search_button.click()
+                self.logger.info("Clicked search button")
+            except Exception as e:
+                self.logger.error(f"Could not find or click search button: {e}. Current URL: {self.driver.current_url}")
+                return False
+
+            time.sleep(2)  # Wait for results to load
             return True
-            
         except Exception as e:
-            self.logger.error(f"Error in step 4: {e}")
+            self.logger.error(f"Error in step 4: {e}. Current URL: {self.driver.current_url if self.driver else 'driver not initialized'}")
             return False
     
     def step5_get_result_link(self):
         """
-        Step 5: Get specific link from search results
+        Step 5: Get specific link from search results (Annuaire)
         
         Returns:
             str: URL of the result link or None if not found
         """
         try:
-            self.logger.info("Step 5: Getting result link from search results")
-            
-            # Wait for results to load
-            time.sleep(3)
-            
-            # Common selectors for result links
-            result_link_selectors = [
-                "a[href*='detail']",
-                "a[href*='profile']",
-                "a[href*='person']",
-                ".result-link",
-                ".person-link",
-                "tbody tr td a",
-                ".search-result a"
-            ]
-            
-            for selector in result_link_selectors:
-                try:
-                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    if elements:
-                        link_url = elements[0].get_attribute('href')
-                        if link_url:
-                            self.logger.info(f"Found result link: {link_url}")
-                            return link_url
-                except:
-                    continue
-            
-            # Try XPath selectors
-            xpath_selectors = [
-                "//a[contains(@href, 'detail')]",
-                "//a[contains(@href, 'profile')]",
-                "//tr/td/a",
-                "//div[@class='result']//a"
-            ]
-            
-            for xpath in xpath_selectors:
-                try:
-                    elements = self.driver.find_elements(By.XPATH, xpath)
-                    if elements:
-                        link_url = elements[0].get_attribute('href')
-                        if link_url:
-                            self.logger.info(f"Found result link via XPath: {link_url}")
-                            return link_url
-                except:
-                    continue
-            
-            self.logger.error("Could not find result link")
-            return None
-            
+            self.logger.info("Step 5: Getting result link from search results (Annuaire)")
+            # Wait for the results table to be present
+            table_xpath = '//*[@id="objets_Objets__dataGrid"]'
+            try:
+                WebDriverWait(self.driver, self.timeout).until(
+                    EC.presence_of_element_located((By.XPATH, table_xpath))
+                )
+            except Exception as e:
+                self.logger.error(f"Results table not found: {e}")
+                return None
+            # Find the first <a> with onclick containing 'ouvrirDossierObjet('
+            try:
+                links = self.driver.find_elements(By.XPATH, "//a[contains(@onclick, 'ouvrirDossierObjet(')]")
+                if not links:
+                    self.logger.error("No result links with 'ouvrirDossierObjet' found.")
+                    return None
+                first_link = links[0]
+                onclick_attr = first_link.get_attribute('onclick')
+                import re
+                match = re.search(r"ouvrirDossierObjet\\((\\d+),", onclick_attr)
+                if not match:
+                    self.logger.error(f"Could not extract object ID from onclick: {onclick_attr}")
+                    return None
+                object_id = match.group(1)
+                profile_url = f"https://pass.imt-atlantique.fr/OpDotNet/eplug/Annuaire/Navigation/Dossier/Dossier.aspx?IdObjet={object_id}&IdTypeObjet=25&IdAnn=&IdProfil=&AccesPerso=false&Wizard="
+                self.logger.info(f"Found profile URL: {profile_url}")
+                return profile_url
+            except Exception as e:
+                self.logger.error(f"Error extracting result link: {e}")
+                return None
         except Exception as e:
             self.logger.error(f"Error in step 5: {e}")
             return None
@@ -520,16 +487,13 @@ class TransatPassScraper:
             self.logger.error(f"Error in step 6: {e}")
             return {'error': str(e), 'url': result_url}
     
-    def run_full_scrape(self, username, password, navigation_button_selector=None):
+    def run_full_scrape(self, username, password):
         """
         Run the complete scraping flow
         
         Args:
             username (str): Login username
             password (str): Login password
-            first_name (str): First name to search
-            last_name (str): Last name to search
-            navigation_button_selector (str): Optional selector for navigation button
             
         Returns:
             dict: Scraped data or error information
@@ -550,24 +514,23 @@ class TransatPassScraper:
                 return {'error': 'Failed at step 2b: SAML POST SSO'}
             
             # Step 3: Navigate to search page
-            if not self.step3_navigate_to_search(navigation_button_selector):
+            if not self.step3_navigate_to_search():
                 return {'error': 'Failed at step 3: Navigation'}
             
             # # Step 4: Search for person
-            # if not self.step4_search_person(first_name, last_name):
-            #     return {'error': 'Failed at step 4: Search'}
+            if not self.step4_search_person("chavanel", "yohann"):
+                 return {'error': 'Failed at step 4: Search'}
             
-            # # Step 5: Get result link
-            # result_url = self.step5_get_result_link()
-            # if not result_url:
-            #     return {'error': 'Failed at step 5: No result link found'}
+            # Step 5: Get result link
+            result_url = self.step5_get_result_link()
+            if not result_url:
+                 return {'error': 'Failed at step 5: No result link found'}
             
             # # Step 6: Scrape data
             # scraped_data = self.step6_scrape_data(result_url)
             
             self.logger.info("Complete scraping flow finished successfully")
             # return scraped_data
-            
         except Exception as e:
             self.logger.error(f"Error in complete scraping flow: {e}")
             return {'error': f'Complete flow failed: {str(e)}'}
