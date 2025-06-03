@@ -26,6 +26,12 @@ clean:
 test-run:
 	docker compose exec scraper python /app/run_scraper.py
 
+# Run scraper immediately (for testing)
+clean-test-run:
+	docker compose build
+	docker compose up -d
+	docker compose exec scraper python /app/run_scraper.py
+
 # Access container bash
 bash:
 	docker compose exec scraper bash
