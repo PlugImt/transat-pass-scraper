@@ -1,0 +1,5 @@
+# Run scraper every day at 6:00 AM
+0 6 * * * /usr/local/bin/python /app/run_scraper.py >> /var/log/scraper/cron.log 2>&1
+
+# Optional: Clean old logs (keep last 30 days)
+0 2 * * * find /var/log/scraper -name "*.log" -mtime +30 -delete
