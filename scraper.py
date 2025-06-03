@@ -7,7 +7,9 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.keys import Keys
 import time
 import logging
-
+from datetime import datetime
+import os
+import re
 class TransatPassScraper:
     def __init__(self, headless=False, timeout=10):
         """
@@ -246,8 +248,6 @@ class TransatPassScraper:
         """
         Step 3: Navigate to Annuaire/Annuaires search page, go inside MANavigationBase frame, then MARecherche frame, and download its content.
         """
-        from datetime import datetime
-        import os
         try:
             self.logger.info("Step 3: Navigating directly to Annuaire/Annuaires search page")
             self.driver.get("https://pass.imt-atlantique.fr/OpDotNet/Noyau/Default.aspx?")
@@ -370,43 +370,78 @@ class TransatPassScraper:
             self.logger.error(f"Error in step 4: {e}. Current URL: {self.driver.current_url if self.driver else 'driver not initialized'}")
             return False
     
-    def step5_get_result_link(self):
+    def step5_get_result_link(self, first_name, last_name):
         """
         Step 5: Get specific link from search results (Annuaire)
-        
+
+        Args:
+            first_name (str): First name of the user
+            last_name (str): Last name of the user
+
         Returns:
             str: URL of the result link or None if not found
         """
         try:
-            self.logger.info("Step 5: Getting result link from search results (Annuaire)")
-            # Wait for the results table to be present
-            table_xpath = '//*[@id="objets_Objets__dataGrid"]'
+            self.logger.info("Step 5: Switching to MAContenu frame to retrieve search results")
+
+            # Switch out of MARecherche frame
+            self.driver.switch_to.default_content()
+            self.driver.switch_to.frame(3)  # Content frame
+            self.driver.switch_to.frame("MANavigationBase")
+
+            # Switch to MAContenu frame
             try:
-                WebDriverWait(self.driver, self.timeout).until(
-                    EC.presence_of_element_located((By.XPATH, table_xpath))
+                contenu_frame = WebDriverWait(self.driver, self.timeout).until(
+                    EC.presence_of_element_located((By.NAME, "MAContenu"))
                 )
-            except Exception as e:
-                self.logger.error(f"Results table not found: {e}")
-                return None
-            # Find the first <a> with onclick containing 'ouvrirDossierObjet('
-            try:
-                links = self.driver.find_elements(By.XPATH, "//a[contains(@onclick, 'ouvrirDossierObjet(')]")
-                if not links:
-                    self.logger.error("No result links with 'ouvrirDossierObjet' found.")
+                self.driver.switch_to.frame(contenu_frame)
+                self.logger.info("Switched to MAContenu frame")
+
+                # Save the HTML content of MAContenu frame for debugging
+                try:
+                    contenu_html = self.driver.execute_script("return document.documentElement.outerHTML;")
+                    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    contenu_path = os.path.join('data', f'MAContenu_debug_{ts}.html')
+                    with open(contenu_path, 'w', encoding='utf-8') as f:
+                        f.write(contenu_html)
+                    self.logger.info(f"Saved HTML of MAContenu frame to: {contenu_path}")
+                except Exception as e:
+                    self.logger.error(f"Could not save HTML of MAContenu frame: {e}")
+
+                # Try to find the user id by scanning all <a> with ouvrirDossierObjet in onclick
+                try:
+                    links = self.driver.find_elements(By.XPATH, "//a[contains(@onclick, 'ouvrirDossierObjet(')]")
+                    for link in links:
+                        onclick_attr = link.get_attribute('onclick')
+                        match = re.search(r"ouvrirDossierObjet\((\d+),", onclick_attr)
+                        if not match:
+                            continue
+                        # Check for a sibling mailto link with the right email
+                        parent_td = link.find_element(By.XPATH, './ancestor::td[1]')
+                        try:
+                            sibling_email_link = parent_td.find_element(By.XPATH, "following-sibling::td//a[starts-with(@href, 'mailto:')]")
+                            email_text = sibling_email_link.text.strip().lower()
+                            
+                            if first_name.lower() in email_text or last_name.lower() in email_text:
+                                object_id = match.group(1)
+                                profile_url = f"https://pass.imt-atlantique.fr/OpDotNet/eplug/Annuaire/Navigation/Dossier/Dossier.aspx?IdObjet={object_id}&IdTypeObjet=25&IdAnn=&IdProfil=&AccesPerso=false&Wizard="
+                                self.logger.info(f"Found profile URL: {profile_url}")
+                                return profile_url
+                        except Exception:
+                            # If no email, fallback to check if the link text matches first or last name
+                            link_text = link.text.strip().lower()
+                            if first_name.lower() in link_text or last_name.lower() in link_text:
+                                object_id = match.group(1)
+                                profile_url = f"https://pass.imt-atlantique.fr/OpDotNet/eplug/Annuaire/Navigation/Dossier/Dossier.aspx?IdObjet={object_id}&IdTypeObjet=25&IdAnn=&IdProfil=&AccesPerso=false&Wizard="
+                                self.logger.info(f"Found profile URL (fallback): {profile_url}")
+                                return profile_url
+                    self.logger.error(f"No user link found for {first_name} {last_name} in MAContenu.")
                     return None
-                first_link = links[0]
-                onclick_attr = first_link.get_attribute('onclick')
-                import re
-                match = re.search(r"ouvrirDossierObjet\\((\\d+),", onclick_attr)
-                if not match:
-                    self.logger.error(f"Could not extract object ID from onclick: {onclick_attr}")
+                except Exception as e:
+                    self.logger.error(f"Error finding user link: {e}")
                     return None
-                object_id = match.group(1)
-                profile_url = f"https://pass.imt-atlantique.fr/OpDotNet/eplug/Annuaire/Navigation/Dossier/Dossier.aspx?IdObjet={object_id}&IdTypeObjet=25&IdAnn=&IdProfil=&AccesPerso=false&Wizard="
-                self.logger.info(f"Found profile URL: {profile_url}")
-                return profile_url
             except Exception as e:
-                self.logger.error(f"Error extracting result link: {e}")
+                self.logger.error(f"Could not switch to MAContenu frame: {e}")
                 return None
         except Exception as e:
             self.logger.error(f"Error in step 5: {e}")
@@ -522,7 +557,7 @@ class TransatPassScraper:
                  return {'error': 'Failed at step 4: Search'}
             
             # Step 5: Get result link
-            result_url = self.step5_get_result_link()
+            result_url = self.step5_get_result_link("chavanel", "yohann")
             if not result_url:
                  return {'error': 'Failed at step 5: No result link found'}
             
