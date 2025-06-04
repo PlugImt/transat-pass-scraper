@@ -455,72 +455,117 @@ class TransatPassScraper:
             result_url (str): URL to scrape data from
             
         Returns:
-            dict: Scraped data
+            dict: Scraped data with planning information
         """
         try:
             self.logger.info("Step 6: Navigating to result page and scraping data")
-            
-            # Navigate to the result URL
             self.driver.get(result_url)
             time.sleep(3)
-            
-            # Initialize data dictionary
-            scraped_data = {
-                'url': result_url,
-                'scraped_at': time.strftime('%Y-%m-%d %H:%M:%S')
-            }
-            
-            # Common data fields to scrape
-            data_selectors = {
-                'name': ['h1', '.name', '#name', '.person-name'],
-                'email': ['a[href^="mailto:"]', '.email', '#email'],
-                'phone': ['.phone', '#phone', '.telephone'],
-                'department': ['.department', '#department', '.service'],
-                'position': ['.position', '#position', '.title', '.poste'],
-                'office': ['.office', '#office', '.bureau'],
-                'address': ['.address', '#address', '.adresse']
-            }
-            
-            # Scrape each type of data
-            for field, selectors in data_selectors.items():
-                for selector in selectors:
+            current_url = self.driver.current_url
+            if "Dossier.aspx?IdObjet=" not in current_url:
+                self.logger.error(f"Not on expected user dossier page. Current: {current_url}")
+                return {'error': f'Not on expected user dossier page: {current_url}', 'url': current_url}
+
+            # Switch to the planning iframe (frm0)
+            try:
+                frm0 = WebDriverWait(self.driver, self.timeout).until(
+                    EC.presence_of_element_located((By.ID, "frm0"))
+                )
+                self.driver.switch_to.frame(frm0)
+                self.logger.info("Switched to planning iframe (frm0)")
+            except Exception as e:
+                self.logger.error(f"Could not switch to planning iframe: {e}")
+                return {'error': f'Could not switch to planning iframe: {e}', 'url': current_url}
+
+            try:
+                # Save HTML content for debugging
+                planning_html = self.driver.execute_script("return document.documentElement.outerHTML;")
+                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                html_path = os.path.join('data', f'planning_debug_{ts}.html')
+                with open(html_path, 'w', encoding='utf-8') as f:
+                    f.write(planning_html)
+                self.logger.info(f"Saved planning HTML to: {html_path}")
+
+                # Define mapping of column index to day
+                valid_days = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
+
+                # Find all course cells (blue background cells)
+                course_cells = self.driver.find_elements(By.XPATH, "//td[@class='GEDcellsouscategorie' and @bgcolor='#297fff']")
+                
+                planning = []
+                for cell in course_cells:
                     try:
-                        element = self.driver.find_element(By.CSS_SELECTOR, selector)
-                        if element and element.text.strip():
-                            if field == 'email' and element.get_attribute('href'):
-                                scraped_data[field] = element.get_attribute('href').replace('mailto:', '')
-                            else:
-                                scraped_data[field] = element.text.strip()
-                            break
-                    except:
+                        # Get the parent row
+                        parent_row = cell.find_element(By.XPATH, "./ancestor::tr[1]")
+                        
+                        # Get all cells in the row
+                        row_cells = parent_row.find_elements(By.TAG_NAME, "td")
+                        
+                        # Find position of the cell in its row (skipping the time column)
+                        cell_index = -1
+                        for i, row_cell in enumerate(row_cells):
+                            if row_cell.id == cell.id:
+                                cell_index = i - 1  # -1 to account for time column
+                                break
+                        
+                        # Only proceed if we found a valid day index (0-6)
+                        if cell_index < 0 or cell_index >= len(valid_days):
+                            self.logger.warning(f"Invalid cell index {cell_index}, skipping course")
+                            continue
+                        
+                        day = valid_days[cell_index]
+                        
+                        # Get the time slot from the first cell in the row
+                        time_slot = row_cells[0].text.strip() if row_cells else ''
+
+                        # Extract course information using specific selectors
+                        title = cell.find_element(By.TAG_NAME, 'b').text.strip()
+                        
+                        # Get all font elements which contain different pieces of information
+                        fonts = cell.find_elements(By.TAG_NAME, 'font')
+                        time_range = fonts[0].text.strip() if len(fonts) > 0 else ''
+                        teacher = fonts[1].text.strip() if len(fonts) > 1 else ''
+                        room = fonts[2].text.strip() if len(fonts) > 2 else ''
+                        group = fonts[3].text.strip() if len(fonts) > 3 else ''
+                        
+                        # Parse the time range
+                        start_time = ''
+                        end_time = ''
+                        if '-' in time_range:
+                            start_time, end_time = map(str.strip, time_range.split('-'))
+
+                        # Build the course entry
+                        course_entry = {
+                            'day': day,
+                            'time_slot': time_slot,
+                            'title': title,
+                            'start_time': start_time,
+                            'end_time': end_time,
+                            'teacher': teacher,
+                            'room': room,
+                            'group': group
+                        }
+                        planning.append(course_entry)
+                        self.logger.info(f"Added course: {title} on {day} at {time_range}")
+
+                    except Exception as e:
+                        self.logger.warning(f"Error extracting course data: {e}")
                         continue
-            
-            # Scrape all text content as fallback
-            try:
-                body_text = self.driver.find_element(By.TAG_NAME, 'body').text
-                scraped_data['full_text'] = body_text
-            except:
-                pass
-            
-            # Scrape all links
-            try:
-                links = []
-                link_elements = self.driver.find_elements(By.TAG_NAME, 'a')
-                for link in link_elements:
-                    href = link.get_attribute('href')
-                    text = link.text.strip()
-                    if href and text:
-                        links.append({'url': href, 'text': text})
-                scraped_data['links'] = links
-            except:
-                pass
-            
-            self.logger.info(f"Successfully scraped data: {len(scraped_data)} fields")
-            return scraped_data
-            
+
+                self.logger.info(f"Successfully extracted {len(planning)} valid courses from planning")
+                return {
+                    'url': result_url,
+                    'scraped_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'planning': planning
+                }
+
+            except Exception as e:
+                self.logger.error(f"Error parsing planning data: {e}")
+                return {'error': f'Error parsing planning data: {e}'}
+
         except Exception as e:
             self.logger.error(f"Error in step 6: {e}")
-            return {'error': str(e), 'url': result_url}
+            return {'error': str(e)}
     
     def run_full_scrape(self, username, password):
         """
@@ -561,11 +606,11 @@ class TransatPassScraper:
             if not result_url:
                  return {'error': 'Failed at step 5: No result link found'}
             
-            # # Step 6: Scrape data
-            # scraped_data = self.step6_scrape_data(result_url)
+            # Step 6: Scrape data
+            scraped_data = self.step6_scrape_data(result_url)
             
             self.logger.info("Complete scraping flow finished successfully")
-            # return scraped_data
+            return scraped_data
         except Exception as e:
             self.logger.error(f"Error in complete scraping flow: {e}")
             return {'error': f'Complete flow failed: {str(e)}'}
