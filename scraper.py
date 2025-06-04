@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 import os
 import re
+
 class TransatPassScraper:
     def __init__(self, headless=False, timeout=10):
         """
@@ -446,16 +447,11 @@ class TransatPassScraper:
         except Exception as e:
             self.logger.error(f"Error in step 5: {e}")
             return None
-    
     def step6_scrape_data(self, result_url):
         """
-        Step 6: Navigate to result link and scrape data
-        
-        Args:
-            result_url (str): URL to scrape data from
-            
+        Step 6: Navigate to result link and scrape data formatted by day of week
         Returns:
-            dict: Scraped data with planning information
+            dict: Scraped planning data grouped by day
         """
         try:
             self.logger.info("Step 6: Navigating to result page and scraping data")
@@ -477,95 +473,78 @@ class TransatPassScraper:
                 self.logger.error(f"Could not switch to planning iframe: {e}")
                 return {'error': f'Could not switch to planning iframe: {e}', 'url': current_url}
 
-            try:
-                # Save HTML content for debugging
-                planning_html = self.driver.execute_script("return document.documentElement.outerHTML;")
-                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                html_path = os.path.join('data', f'planning_debug_{ts}.html')
-                with open(html_path, 'w', encoding='utf-8') as f:
-                    f.write(planning_html)
-                self.logger.info(f"Saved planning HTML to: {html_path}")
+            days = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
+            planning = {day: [] for day in days}
 
-                # Define mapping of column index to day
-                valid_days = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
-
-                # Find all course cells (blue background cells)
-                course_cells = self.driver.find_elements(By.XPATH, "//td[@class='GEDcellsouscategorie' and @bgcolor='#297fff']")
-                
-                planning = []
-                for cell in course_cells:
-                    try:
-                        # Get the parent row
-                        parent_row = cell.find_element(By.XPATH, "./ancestor::tr[1]")
-                        
-                        # Get all cells in the row
-                        row_cells = parent_row.find_elements(By.TAG_NAME, "td")
-                        
-                        # Find position of the cell in its row (skipping the time column)
-                        cell_index = -1
-                        for i, row_cell in enumerate(row_cells):
-                            if row_cell.id == cell.id:
-                                cell_index = i - 1  # -1 to account for time column
-                                break
-                        
-                        # Only proceed if we found a valid day index (0-6)
-                        if cell_index < 0 or cell_index >= len(valid_days):
-                            self.logger.warning(f"Invalid cell index {cell_index}, skipping course")
-                            continue
-                        
-                        day = valid_days[cell_index]
-                        
-                        # Get the time slot from the first cell in the row
-                        time_slot = row_cells[0].text.strip() if row_cells else ''
-
-                        # Extract course information using specific selectors
-                        title = cell.find_element(By.TAG_NAME, 'b').text.strip()
-                        
-                        # Get all font elements which contain different pieces of information
-                        fonts = cell.find_elements(By.TAG_NAME, 'font')
-                        time_range = fonts[0].text.strip() if len(fonts) > 0 else ''
-                        teacher = fonts[1].text.strip() if len(fonts) > 1 else ''
-                        room = fonts[2].text.strip() if len(fonts) > 2 else ''
-                        group = fonts[3].text.strip() if len(fonts) > 3 else ''
-                        
-                        # Parse the time range
-                        start_time = ''
-                        end_time = ''
-                        if '-' in time_range:
-                            start_time, end_time = map(str.strip, time_range.split('-'))
-
-                        # Build the course entry
-                        course_entry = {
-                            'day': day,
-                            'time_slot': time_slot,
-                            'title': title,
-                            'start_time': start_time,
-                            'end_time': end_time,
-                            'teacher': teacher,
-                            'room': room,
-                            'group': group
-                        }
-                        planning.append(course_entry)
-                        self.logger.info(f"Added course: {title} on {day} at {time_range}")
-
-                    except Exception as e:
-                        self.logger.warning(f"Error extracting course data: {e}")
+            rows = self.driver.find_elements(By.XPATH, "//tr[td[@bgcolor='#DDDDDD']]")
+            for row in rows:
+                try:
+                    cells = row.find_elements(By.XPATH, "./td")
+                    if len(cells) < 8:
                         continue
+                    time_slot = cells[0].text.strip()
 
-                self.logger.info(f"Successfully extracted {len(planning)} valid courses from planning")
-                return {
-                    'url': result_url,
-                    'scraped_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'planning': planning
-                }
+                    for i, day in enumerate(days):
+                        container_cells = cells[i + 1].find_elements(By.XPATH, ".//td[@class='GEDcellsouscategorie']")
+                        for course_cell in container_cells:
+                            bgcolor = course_cell.get_attribute("bgcolor")
+                            if not bgcolor or not re.match(r"#(?:[0-9a-fA-F]{6})", bgcolor):
+                                continue  # skip empty or non-course cells
 
-            except Exception as e:
-                self.logger.error(f"Error parsing planning data: {e}")
-                return {'error': f'Error parsing planning data: {e}'}
+                            try:
+                                title = course_cell.find_element(By.TAG_NAME, 'b').text.strip()
+                                font_elements = course_cell.find_elements(By.TAG_NAME, 'font')
+                                time_range, teacher, room, group = '', '', '', ''
+
+                                if len(font_elements) >= 1:
+                                    time_range = font_elements[0].text.strip()
+                                if len(font_elements) >= 2:
+                                    text1 = font_elements[1].text.strip()
+                                if len(font_elements) >= 3:
+                                    text2 = font_elements[2].text.strip()
+                                if len(font_elements) >= 4:
+                                    text3 = font_elements[3].text.strip()
+                                else:
+                                    text3 = ''
+
+                                # Heuristic classification
+                                candidates = [text1, text2, text3]
+                                for item in candidates:
+                                    if re.search(r"FIL|PROMO|FISE|FIT", item, re.IGNORECASE):
+                                        group = item
+                                    elif re.search(r"\b[A-Z]{2,}-[A-Z0-9]+", item):  # Room like NA-J144
+                                        room = item
+                                    elif re.search(r"[A-Z][a-z]+ [A-Z][a-z]+", item):
+                                        teacher = item
+
+                                start_time, end_time = '', ''
+                                if '-' in time_range:
+                                    start_time, end_time = map(str.strip, time_range.split('-'))
+
+                                planning[day].append({
+                                    'time_slot': time_slot,
+                                    'title': title,
+                                    'start_time': start_time,
+                                    'end_time': end_time,
+                                    'teacher': teacher,
+                                    'room': room,
+                                    'group': group
+                                })
+
+                            except Exception as e:
+                                self.logger.warning(f"Failed to parse course cell on {day} {time_slot}: {e}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to parse row: {e}")
+
+            return {
+                'url': result_url,
+                'scraped_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'planning': planning
+            }
 
         except Exception as e:
-            self.logger.error(f"Error in step 6: {e}")
             return {'error': str(e)}
+
     
     def run_full_scrape(self, username, password):
         """
