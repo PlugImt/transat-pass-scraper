@@ -50,10 +50,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
-COPY scraper.py .
+COPY .env .
+COPY api_client.py .
 COPY config.py .
 COPY run_scraper.py .
-COPY .env .
+COPY scraper.py .
 
 # Copy cron job file
 COPY crontab /etc/cron.d/scraper-cron

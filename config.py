@@ -25,7 +25,7 @@ class Config:
     HEALTH_CHECK_PORT = int(os.getenv('HEALTH_CHECK_PORT', '8080'))
 
     # API settings
-    DEV_API_URL = os.getenv('DEV_API_URL', 'http://127.0.0.1:3000')
+    DEV_API_URL = os.getenv('DEV_API_URL', 'http://host.docker.internal:3000')
     PROD_API_URL = os.getenv('PROD_API_URL', 'https://transat.destimt.fr')
     API_EMAIL = os.getenv('API_EMAIL', 'your_email_here')
     API_PASSWORD = os.getenv('API_PASSWORD', 'your_password_here')
