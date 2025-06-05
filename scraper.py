@@ -7,9 +7,12 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.keys import Keys
 import time
 import logging
-from datetime import datetime
 import os
+import requests
 import re
+from config import Config
+from api_client import ApiClient
+from datetime import datetime, timedelta
 
 class TransatPassScraper:
     def __init__(self, headless=False, timeout=10):
@@ -447,35 +450,51 @@ class TransatPassScraper:
         except Exception as e:
             self.logger.error(f"Error in step 5: {e}")
             return None
+        
     def step6_scrape_data(self, result_url):
-        """
-        Step 6: Navigate to result link and scrape data formatted by day of week
-        Returns:
-            dict: Scraped planning data grouped by day
-        """
         try:
             self.logger.info("Step 6: Navigating to result page and scraping data")
             self.driver.get(result_url)
             time.sleep(3)
-            current_url = self.driver.current_url
-            if "Dossier.aspx?IdObjet=" not in current_url:
-                self.logger.error(f"Not on expected user dossier page. Current: {current_url}")
-                return {'error': f'Not on expected user dossier page: {current_url}', 'url': current_url}
 
-            # Switch to the planning iframe (frm0)
-            try:
-                frm0 = WebDriverWait(self.driver, self.timeout).until(
-                    EC.presence_of_element_located((By.ID, "frm0"))
-                )
-                self.driver.switch_to.frame(frm0)
-                self.logger.info("Switched to planning iframe (frm0)")
-            except Exception as e:
-                self.logger.error(f"Could not switch to planning iframe: {e}")
-                return {'error': f'Could not switch to planning iframe: {e}', 'url': current_url}
+            if "Dossier.aspx?IdObjet=" not in self.driver.current_url:
+                return {'error': f'Unexpected URL: {self.driver.current_url}', 'url': self.driver.current_url}
 
-            days = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
-            planning = {day: [] for day in days}
+            WebDriverWait(self.driver, self.timeout).until(EC.frame_to_be_available_and_switch_to_it((By.ID, "frm0")))
 
+            # Extract month and year from the header
+            header_text = self.driver.find_element(
+                By.XPATH, "//td[@class='AuthentificationMenu' and contains(text(),'Agenda de l')]"
+            ).text
+            month_year_match = re.search(r'([A-Za-zéû]+)\s+(\d{4})$', header_text.strip())
+            if not month_year_match:
+                raise Exception("Could not extract month and year from planning header.")
+            french_month, year = month_year_match.groups()
+            month_map = {
+                "Janvier": 1, "Février": 2, "Mars": 3, "Avril": 4,
+                "Mai": 5, "Juin": 6, "Juillet": 7, "Août": 8,
+                "Septembre": 9, "Octobre": 10, "Novembre": 11, "Décembre": 12
+            }
+            month = month_map.get(french_month)
+            if not month:
+                raise Exception(f"Unrecognized French month name: {french_month}")
+
+            # Extract column headers (day name + day number)
+            header_cells = self.driver.find_elements(By.XPATH, "//tr[contains(@class,'fondTresClair')]/td[position()>1]")
+            days = []
+            for i, cell in enumerate(header_cells):
+                text = cell.text.strip()
+                match = re.match(r"(\w+)\s+(\d{2})", text)
+                if match:
+                    day_name, day_num = match.groups()
+                    full_date = datetime(int(year), month, int(day_num)).strftime("%Y-%m-%d")
+                    days.append((day_name, full_date))
+                else:
+                    days.append((f"Day{i}", None))  # fallback if missing
+
+            planning = []
+
+            # Traverse planning rows
             rows = self.driver.find_elements(By.XPATH, "//tr[td[@bgcolor='#DDDDDD']]")
             for row in rows:
                 try:
@@ -484,45 +503,28 @@ class TransatPassScraper:
                         continue
                     time_slot = cells[0].text.strip()
 
-                    for i, day in enumerate(days):
+                    for i, (day_name, date_str) in enumerate(days):
                         container_cells = cells[i + 1].find_elements(By.XPATH, ".//td[@class='GEDcellsouscategorie']")
                         for course_cell in container_cells:
-                            bgcolor = course_cell.get_attribute("bgcolor")
-                            if not bgcolor or not re.match(r"#(?:[0-9a-fA-F]{6})", bgcolor):
-                                continue  # skip empty or non-course cells
-
                             try:
                                 title = course_cell.find_element(By.TAG_NAME, 'b').text.strip()
                                 font_elements = course_cell.find_elements(By.TAG_NAME, 'font')
-                                time_range, teacher, room, group = '', '', '', ''
+                                start_time = end_time = teacher = room = group = ""
+                                values = [e.text.strip() for e in font_elements]
 
-                                if len(font_elements) >= 1:
-                                    time_range = font_elements[0].text.strip()
-                                if len(font_elements) >= 2:
-                                    text1 = font_elements[1].text.strip()
-                                if len(font_elements) >= 3:
-                                    text2 = font_elements[2].text.strip()
-                                if len(font_elements) >= 4:
-                                    text3 = font_elements[3].text.strip()
-                                else:
-                                    text3 = ''
+                                if values and '-' in values[0]:
+                                    start_time, end_time = map(str.strip, values[0].split('-'))
 
-                                # Heuristic classification
-                                candidates = [text1, text2, text3]
-                                for item in candidates:
-                                    if re.search(r"FIL|PROMO|FISE|FIT", item, re.IGNORECASE):
-                                        group = item
-                                    elif re.search(r"\b[A-Z]{2,}-[A-Z0-9]+", item):  # Room like NA-J144
-                                        room = item
-                                    elif re.search(r"[A-Z][a-z]+ [A-Z][a-z]+", item):
-                                        teacher = item
+                                for val in values[1:]:
+                                    if re.search(r"\bFISE|FIT|FIL|PROMO|GPE|ANNÉE\b", val, re.IGNORECASE):
+                                        group = val
+                                    elif re.match(r"^[A-Z]{2}-[A-Z0-9]+", val) or '(' in val:
+                                        room = val
+                                    elif re.match(r"[A-Z][a-z]+ [A-Z][a-z]+", val):
+                                        teacher = val
 
-                                start_time, end_time = '', ''
-                                if '-' in time_range:
-                                    start_time, end_time = map(str.strip, time_range.split('-'))
-
-                                planning[day].append({
-                                    'time_slot': time_slot,
+                                planning.append({
+                                    'date': date_str,
                                     'title': title,
                                     'start_time': start_time,
                                     'end_time': end_time,
@@ -532,7 +534,7 @@ class TransatPassScraper:
                                 })
 
                             except Exception as e:
-                                self.logger.warning(f"Failed to parse course cell on {day} {time_slot}: {e}")
+                                self.logger.warning(f"Failed to parse course cell at {date_str} {time_slot}: {e}")
                 except Exception as e:
                     self.logger.warning(f"Failed to parse row: {e}")
 
@@ -543,8 +545,39 @@ class TransatPassScraper:
             }
 
         except Exception as e:
+            self.logger.error(f"Error in step 6: {e}")
             return {'error': str(e)}
-
+    
+    def step8_send_courses_to_api(self, planning, user_email, api_email, api_password, env="dev"):
+        """
+        Step 8: Send each course in planning to the API
+        Args:
+            planning (list): List of course dicts
+            user_email (str): Email of the user whose planning it is
+            api_email (str): Email for API authentication
+            api_password (str): Password for API authentication
+            env (str): 'dev' or 'prod' for API base url
+        """
+        client = ApiClient(env=env)
+        try:
+            client.authenticate(api_email, api_password)
+        except requests.exceptions.ConnectionError as e:
+            self.logger.error(f"API connection error: {e}. Is the API server running at {client.base_api_url}?")
+            return {'error': f'API connection error: {e}. Is the API server running at {client.base_api_url}?'}
+        except Exception as e:
+            self.logger.error(f"API authentication failed: {e}")
+            return {'error': f'API authentication failed: {e}'}
+        success_count = 0
+        for course in planning:
+            course_payload = course.copy()
+            course_payload["user_email"] = user_email
+            try:
+                client.post_course(course_payload)
+                success_count += 1
+            except Exception as e:
+                self.logger.error(f"Failed to send course to API: {course_payload} | Error: {e}")
+        self.logger.info(f"Step 8: Sent {success_count}/{len(planning)} courses to API.")
+        return success_count == len(planning)
     
     def run_full_scrape(self, username, password):
         """
@@ -559,6 +592,21 @@ class TransatPassScraper:
         """
         try:
             self.logger.info("Starting complete scraping flow")
+            
+            # Step 0: Authenticate to API before starting scraping.
+            user_email = Config.USER_EMAIL
+            api_email = Config.API_EMAIL
+            api_password = Config.API_PASSWORD
+
+            client = ApiClient()
+            try:
+                client.authenticate(api_email, api_password)
+            except requests.exceptions.ConnectionError as e:
+                self.logger.error(f"API connection error: {e}. Is the API server running at {client.base_api_url}?")
+                return {'error': f'API connection error: {e}. Is the API server running at {client.base_api_url}?'}
+            except Exception as e:
+                self.logger.error(f"API authentication failed: {e}")
+                return {'error': f'API authentication failed: {e}'}
             
             # Step 1: Select authentication mode
             if not self.step1_select_auth_mode():
@@ -587,6 +635,12 @@ class TransatPassScraper:
             
             # Step 6: Scrape data
             scraped_data = self.step6_scrape_data(result_url)
+            
+            # Step 7: (optional) Any post-processing here
+
+            # Step 8: Send courses to API
+            if 'planning' in scraped_data and scraped_data['planning']:
+                self.step8_send_courses_to_api(scraped_data['planning'], user_email, api_email, api_password)
             
             self.logger.info("Complete scraping flow finished successfully")
             return scraped_data
