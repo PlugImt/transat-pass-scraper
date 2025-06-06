@@ -51,7 +51,7 @@ def run_scraper():
     
     try:
         # Validate configuration
-        if not Config.USERNAME or not Config.PASSWORD:
+        if not Config.PASS_USERNAME or not Config.PASS_PASSWORD:
             raise ValueError("Username and password must be provided")
         
         # Initialize scraper
@@ -62,8 +62,8 @@ def run_scraper():
     
         # Run scraping
         result = scraper.run_full_scrape(
-            username=Config.USERNAME,
-            password=Config.PASSWORD
+            username=Config.PASS_USERNAME,
+            password=Config.PASS_PASSWORD
         )
         
         # Add metadata

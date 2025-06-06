@@ -3,8 +3,8 @@ services:
     build: .
     container_name: transat-pass-scraper
     environment:
-      - SCRAPER_USERNAME=${SCRAPER_USERNAME}
-      - SCRAPER_PASSWORD=${SCRAPER_PASSWORD}
+      - PASS_USERNAME=${PASS_USERNAME}
+      - PASS_PASSWORD=${PASS_PASSWORD}
       - HEADLESS=true
       - TIMEOUT=15
       - OUTPUT_DIR=/app/data

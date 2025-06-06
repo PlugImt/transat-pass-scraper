@@ -374,9 +374,9 @@ class TransatPassScraper:
             self.logger.error(f"Error in step 4: {e}. Current URL: {self.driver.current_url if self.driver else 'driver not initialized'}")
             return False
     
-    def step5_get_result_link(self, first_name, last_name):
+    def step5_get_result_link(self, first_name, last_name, user_id):
         """
-        Step 5: Get specific link from search results (Annuaire)
+        Step 5: Get specific link from search results (Annuaire) and cache user's pass ID in the database.
 
         Args:
             first_name (str): First name of the user
@@ -430,6 +430,10 @@ class TransatPassScraper:
                                 object_id = match.group(1)
                                 profile_url = f"https://pass.imt-atlantique.fr/OpDotNet/eplug/Annuaire/Navigation/Dossier/Dossier.aspx?IdObjet={object_id}&IdTypeObjet=25&IdAnn=&IdProfil=&AccesPerso=false&Wizard="
                                 self.logger.info(f"Found profile URL: {profile_url}")
+
+                                # Step 5b: Cache user's pass ID in the database
+                                self.step5b_cache_pass_id(int(user_id), int(object_id))
+
                                 return profile_url
                         except Exception:
                             # If no email, fallback to check if the link text matches first or last name
@@ -438,6 +442,10 @@ class TransatPassScraper:
                                 object_id = match.group(1)
                                 profile_url = f"https://pass.imt-atlantique.fr/OpDotNet/eplug/Annuaire/Navigation/Dossier/Dossier.aspx?IdObjet={object_id}&IdTypeObjet=25&IdAnn=&IdProfil=&AccesPerso=false&Wizard="
                                 self.logger.info(f"Found profile URL (fallback): {profile_url}")
+
+                                # Step 5b: Cache user's pass ID in the database
+                                self.step5b_cache_pass_id(int(user_id), int(object_id))
+
                                 return profile_url
                     self.logger.error(f"No user link found for {first_name} {last_name} in MAContenu.")
                     return None
@@ -450,7 +458,40 @@ class TransatPassScraper:
         except Exception as e:
             self.logger.error(f"Error in step 5: {e}")
             return None
-        
+
+    def step5b_cache_pass_id(self, user_id: int, pass_id: int):
+        """
+        Step 5b: Cache user's pass ID in the database via an API PATCH request.
+
+        Args:
+            user_id (int): The user ID
+            pass_id (int): The pass ID to cache
+        """
+        api_client = ApiClient()
+
+        # Ensure the client is authenticated.
+        if not api_client.token:
+            try:
+                email = Config.TRANSAT_API_EMAIL
+                password = Config.TRANSAT_API_PASSWORD
+                api_client.authenticate(email, password)
+            except requests.exceptions.ConnectionError as e:
+                self.logger.error(f"API connection error: {e}. Is the API server running at {api_client.base_api_url}?")
+                return {'error': f'API connection error: {e}. Is the API server running at {api_client.base_api_url}?'}
+            except Exception as e:
+                self.logger.error(f"API authentication failed: {e}")
+                return {'error': f'API authentication failed: {e}'}
+
+        # Attempt to patch pass ID.
+        try:
+            api_client.patch_user_pass_id(user_id, pass_id)
+            self.logger.info(f"Successfully cached pass ID {pass_id} in the database.")
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Failed to cache pass ID {pass_id}: {e}")
+        except Exception as e:
+            self.logger.error(f"Unexpected error in step5b_cache_pass_id: {e}")
+
+
     def step6_scrape_data(self, result_url):
         try:
             self.logger.info("Step 6: Navigating to result page and scraping data")
@@ -548,19 +589,18 @@ class TransatPassScraper:
             self.logger.error(f"Error in step 6: {e}")
             return {'error': str(e)}
     
-    def step8_send_courses_to_api(self, planning, user_email, api_email, api_password, env="dev"):
+    def step8_send_courses_to_api(self, planning, TEMPORARY_USER_EMAIL, transat_api_email, transat_api_password):
         """
         Step 8: Send each course in planning to the API
         Args:
             planning (list): List of course dicts
-            user_email (str): Email of the user whose planning it is
-            api_email (str): Email for API authentication
-            api_password (str): Password for API authentication
-            env (str): 'dev' or 'prod' for API base url
+            TEMPORARY_USER_EMAIL (str): Email of the user whose planning it is
+            transat_api_email (str): Email for API authentication
+            transat_api_password (str): Password for API authentication
         """
-        client = ApiClient(env=env)
+        client = ApiClient()
         try:
-            client.authenticate(api_email, api_password)
+            client.authenticate(transat_api_email, transat_api_password)
         except requests.exceptions.ConnectionError as e:
             self.logger.error(f"API connection error: {e}. Is the API server running at {client.base_api_url}?")
             return {'error': f'API connection error: {e}. Is the API server running at {client.base_api_url}?'}
@@ -570,7 +610,7 @@ class TransatPassScraper:
         success_count = 0
         for course in planning:
             course_payload = course.copy()
-            course_payload["user_email"] = user_email
+            course_payload["TEMPORARY_USER_EMAIL"] = TEMPORARY_USER_EMAIL
             try:
                 client.post_course(course_payload)
                 success_count += 1
@@ -594,13 +634,12 @@ class TransatPassScraper:
             self.logger.info("Starting complete scraping flow")
             
             # Step 0: Authenticate to API before starting scraping.
-            user_email = Config.USER_EMAIL
-            api_email = Config.API_EMAIL
-            api_password = Config.API_PASSWORD
+            TRANSAT_API_EMAIL = Config.TRANSAT_API_EMAIL
+            TRANSAT_API_PASSWORD = Config.TRANSAT_API_PASSWORD
 
             client = ApiClient()
             try:
-                client.authenticate(api_email, api_password)
+                client.authenticate(TRANSAT_API_EMAIL, TRANSAT_API_PASSWORD)
             except requests.exceptions.ConnectionError as e:
                 self.logger.error(f"API connection error: {e}. Is the API server running at {client.base_api_url}?")
                 return {'error': f'API connection error: {e}. Is the API server running at {client.base_api_url}?'}
@@ -629,7 +668,7 @@ class TransatPassScraper:
                  return {'error': 'Failed at step 4: Search'}
             
             # Step 5: Get result link
-            result_url = self.step5_get_result_link("chavanel", "yohann")
+            result_url = self.step5_get_result_link("chavanel", "yohann", Config.TEMPORARY_USER_ID)
             if not result_url:
                  return {'error': 'Failed at step 5: No result link found'}
             
@@ -640,7 +679,7 @@ class TransatPassScraper:
 
             # Step 8: Send courses to API
             if 'planning' in scraped_data and scraped_data['planning']:
-                self.step8_send_courses_to_api(scraped_data['planning'], user_email, api_email, api_password)
+                self.step8_send_courses_to_api(scraped_data['planning'], Config.TEMPORARY_USER_EMAIL, TRANSAT_API_EMAIL, TRANSAT_API_PASSWORD)
             
             self.logger.info("Complete scraping flow finished successfully")
             return scraped_data
