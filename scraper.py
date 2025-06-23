@@ -493,22 +493,53 @@ class TransatPassScraper:
 
     def step6_scrape_data(self, result_url):
         try:
-            self.logger.info("Step 6: Navigating to result page and scraping data")
+            self.logger.info(f"Step 6: Navigating to user planning page {result_url}")
             self.driver.get(result_url)
             time.sleep(3)
 
             if "Dossier.aspx?IdObjet=" not in self.driver.current_url:
                 return {'error': f'Unexpected URL: {self.driver.current_url}', 'url': self.driver.current_url}
 
-            WebDriverWait(self.driver, self.timeout).until(EC.frame_to_be_available_and_switch_to_it((By.ID, "frm0")))
+            self.logger.info("On user planning page. Looking for 'Agenda' tab.")
+            self.driver.switch_to.default_content()
+
+            # XPath to find the tab containing the text "Agenda" and click it.
+            agenda_tab_xpath = "//nobr[text()='Agenda']/ancestor::table[contains(@onclick, 'ComponentArt_TabStrip_TabClick')]"
+            try:
+                agenda_tab = WebDriverWait(self.driver, self.timeout).until(
+                    EC.element_to_be_clickable((By.XPATH, agenda_tab_xpath))
+                )
+                agenda_tab.click()
+                self.logger.info("Clicked the 'Agenda' tab.")
+                time.sleep(2) # Wait for the iframe content to start loading
+            except TimeoutException:
+                self.logger.error("Could not find or click the 'Agenda' tab.")
+                return {'error': "Could not find or click the 'Agenda' tab."}
+
+            # Now, wait for the correct iframe for the agenda (frm1) and switch to it.
+            self.logger.info("Waiting for the agenda content to load in iframe 'frm1'...")
+            WebDriverWait(self.driver, self.timeout).until(
+                EC.frame_to_be_available_and_switch_to_it((By.ID, "frm1"))
+            )
+            self.logger.info("Switched to iframe 'frm1'.")
+
+            # Wait for a specific element inside the iframe to confirm the planning has loaded.
+            planning_header_xpath = "//td[@class='AuthentificationMenu' and contains(text(),'Agenda de l')]"
+            WebDriverWait(self.driver, self.timeout).until(
+                EC.presence_of_element_located((By.XPATH, planning_header_xpath))
+            )
+            self.logger.info("Agenda planning table is visible. Starting to scrape.")
 
             # Extract month and year from the header
-            header_text = self.driver.find_element(
-                By.XPATH, "//td[@class='AuthentificationMenu' and contains(text(),'Agenda de l')]"
-            ).text
+            header_text = self.driver.find_element(By.XPATH, planning_header_xpath).text
             month_year_match = re.search(r'([A-Za-zéû]+)\s+(\d{4})$', header_text.strip())
             if not month_year_match:
+                # If scraping fails here, it might be because the page is still loading.
+                # A screenshot could be helpful for debugging.
+                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                self.driver.save_screenshot(os.path.join('data', f'scrape_fail_{ts}.png'))
                 raise Exception("Could not extract month and year from planning header.")
+            
             french_month, year = month_year_match.groups()
             month_map = {
                 "Janvier": 1, "Février": 2, "Mars": 3, "Avril": 4,
@@ -544,6 +575,7 @@ class TransatPassScraper:
                     time_slot = cells[0].text.strip()
 
                     for i, (day_name, date_str) in enumerate(days):
+                        if date_str is None: continue
                         container_cells = cells[i + 1].find_elements(By.XPATH, ".//td[@class='GEDcellsouscategorie']")
                         for course_cell in container_cells:
                             try:
@@ -555,35 +587,31 @@ class TransatPassScraper:
                                     title = "Unknown Title"
 
                                 font_elements = course_cell.find_elements(By.TAG_NAME, 'font')
-                                start_time = end_time = teacher = room = group = ""
-                                values = [e.text.strip() for e in font_elements]
+                                start_time_obj = end_time_obj = teacher = room = group = ""
+                                values = [e.text.strip() for e in font_elements if e.text.strip()]
 
                                 if values and '-' in values[0]:
                                     try:
                                         start_time, end_time = map(str.strip, values[0].split('-'))
-                                        start_time = datetime.strptime(f"{date_str} {start_time}", "%Y-%m-%d %H:%M")
-                                        end_time = datetime.strptime(f"{date_str} {end_time}", "%Y-%m-%d %H:%M")
+                                        start_time_obj = datetime.strptime(f"{date_str} {start_time}", "%Y-%m-%d %H:%M")
+                                        end_time_obj = datetime.strptime(f"{date_str} {end_time}", "%Y-%m-%d %H:%M")
                                     except ValueError:
-                                        self.logger.warning(f"Invalid time format in course cell at {date_str} {time_slot}")
+                                        self.logger.warning(f"Invalid time format in course cell at {date_str} {time_slot}: {values[0]}")
 
                                 for val in values[1:]:
                                     if re.search(r"\bFISE|FIT|FIL|PROMO|GPE|ANNÉE\b", val, re.IGNORECASE):
                                         group = val
-                                    elif re.match(r"^[A-Z]{2}-[A-Z0-9]+", val) or '(' in val:
+                                    elif re.match(r"^[A-Z]{2,}-[A-Z0-9]+", val) or '(' in val:
                                         room = val
-                                    elif re.match(r"[A-Z]+\s*&nbsp;\s*[A-Z][a-z]+", val):
-                                        teacher = val.replace("&nbsp;", " ")
-                                    elif re.match(r"[A-Z][a-z]+\s+[A-Z][a-z]+", val):
-                                        teacher = val
+                                    elif len(val.split()) > 1 and all(word[0].isupper() for word in val.replace(' ', ' ').split()):
+                                        teacher = val.replace(" ", " ")
 
-                                if not any([start_time, end_time, teacher, room, group]):
-                                    self.logger.warning(f"Incomplete data for course cell at {date_str} {time_slot}")
-                                else:
+                                if title != "Unknown Title":
                                     planning.append({
                                         'date': date_str,
                                         'title': title,
-                                        'start_time': start_time,
-                                        'end_time': end_time,
+                                        'start_time': start_time_obj,
+                                        'end_time': end_time_obj,
                                         'teacher': teacher,
                                         'room': room,
                                         'group': group
@@ -602,6 +630,15 @@ class TransatPassScraper:
 
         except Exception as e:
             self.logger.error(f"Error in step 6: {e}")
+            # Save a screenshot on error for easier debugging.
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            error_screenshot_path = os.path.join('data', f'step6_error_{ts}.png')
+            try:
+                self.driver.save_screenshot(error_screenshot_path)
+                self.logger.info(f"Saved error screenshot to {error_screenshot_path}")
+            except Exception as e_ss:
+                self.logger.error(f"Could not save error screenshot: {e_ss}")
+
             return {'error': str(e)}
     
     def step8_send_courses_to_api(self, planning, user_id, transat_api_email, transat_api_password):
@@ -717,7 +754,7 @@ class TransatPassScraper:
                             raise Exception(f'Failed at step 5: No result link found for {first_name} {last_name}')
                     
                     # Step 6: Scrape data
-                    """ scraped_data = self.step6_scrape_data(result_url)
+                    scraped_data = self.step6_scrape_data(result_url)
                     if 'error' in scraped_data:
                         raise Exception(f"Failed at step 6: Scraping data. Error: {scraped_data['error']}")
                     
@@ -725,7 +762,7 @@ class TransatPassScraper:
 
                     # Step 7: Optimize scraped data
 
-                    # Step 8: Send courses to API
+                    """# Step 8: Send courses to API
                     if 'planning' in scraped_data and scraped_data['planning']:
                         if not self.step8_send_courses_to_api(scraped_data['planning'], user_id, TRANSAT_API_EMAIL, TRANSAT_API_PASSWORD):
                            self.logger.warning(f"Step 8: Not all courses were sent to API for user {user_id}.")
@@ -736,6 +773,7 @@ class TransatPassScraper:
                     
                     self.logger.info(f"--- Successfully processed user #{user_id}: {first_name} {last_name} ---")
                     results['success'] += 1
+                    results['planning'] = scraped_data
 
                 except Exception as e:
                     self.logger.error(f"!!! Failed to process user #{user_id}: {first_name} {last_name}. Error: {e} !!!")
