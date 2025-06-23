@@ -29,6 +29,15 @@ def setup_logging():
     
     return logging.getLogger(__name__)
 
+def json_datetime_serializer(obj):
+    """
+    Custom JSON serializer for objects not serializable by default json code.
+    Specifically handles datetime objects.
+    """
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
+
 def save_results(data, output_dir):
     """Save scraping results to file"""
     output_path = Path(output_dir)
@@ -40,7 +49,8 @@ def save_results(data, output_dir):
     file_path = output_path / filename
     
     with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        # Use a custom serializer to handle datetime objects.
+        json.dump(data, f, indent=2, ensure_ascii=False, default=json_datetime_serializer)
     
     return str(file_path)
 
@@ -86,7 +96,7 @@ def run_scraper():
             logger.info("Scraping completed successfully")
             
     except Exception as e:
-        logger.error(f"Scraper run failed: {e}")
+        logger.error(f"Scraper run failed: {e}", exc_info=True)
         sys.exit(1)
 
 if __name__ == "__main__":
