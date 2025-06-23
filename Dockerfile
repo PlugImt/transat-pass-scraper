@@ -55,6 +55,7 @@ COPY api_client.py .
 COPY config.py .
 COPY run_scraper.py .
 COPY scraper.py .
+COPY steps ./steps/
 
 # Copy cron job file
 COPY crontab /etc/cron.d/scraper-cron
