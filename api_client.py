@@ -1,4 +1,3 @@
-import os
 import requests
 from config import Config
 
@@ -44,5 +43,17 @@ class ApiClient:
 
         data = {"pass_id": int(pass_id)}
         resp = requests.patch(url, json=data, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_all_users(self):
+        if not self.token:
+            raise Exception("API client is not authenticated. Please authenticate first.")
+
+        url = f"{self.base_api_url}/api/planning/users"
+        headers = {
+            "Authorization": f"Bearer {self.token}"
+        }
+        resp = requests.get(url, headers=headers)
         resp.raise_for_status()
         return resp.json()
