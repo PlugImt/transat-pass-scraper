@@ -12,7 +12,7 @@ import requests
 import re
 from config import Config
 from api_client import ApiClient
-from datetime import datetime, timedelta
+from datetime import datetime
 
 class TransatPassScraper:
     def __init__(self, headless=False, timeout=10):
@@ -511,7 +511,7 @@ class TransatPassScraper:
                 )
                 agenda_tab.click()
                 self.logger.info("Clicked the 'Agenda' tab.")
-                time.sleep(2) # Wait for the iframe content to start loading
+                time.sleep(3) # Wait for the iframe content to start loading.
             except TimeoutException:
                 self.logger.error("Could not find or click the 'Agenda' tab.")
                 return {'error': "Could not find or click the 'Agenda' tab."}
@@ -530,7 +530,7 @@ class TransatPassScraper:
             )
             self.logger.info("Agenda planning table is visible. Starting to scrape.")
 
-            # Extract month and year from the header
+            # Extract month and year from the header.
             header_text = self.driver.find_element(By.XPATH, planning_header_xpath).text
             month_year_match = re.search(r'([A-Za-zéû]+)\s+(\d{4})$', header_text.strip())
             if not month_year_match:
@@ -542,95 +542,119 @@ class TransatPassScraper:
             
             french_month, year = month_year_match.groups()
             month_map = {
-                "Janvier": 1, "Février": 2, "Mars": 3, "Avril": 4,
-                "Mai": 5, "Juin": 6, "Juillet": 7, "Août": 8,
-                "Septembre": 9, "Octobre": 10, "Novembre": 11, "Décembre": 12
+                "Janvier": 1, "Février": 2, "Mars": 3, "Avril": 4, "Mai": 5, "Juin": 6, 
+                "Juillet": 7, "Août": 8, "Septembre": 9, "Octobre": 10, "Novembre": 11, "Décembre": 12
             }
             month = month_map.get(french_month)
+
             if not month:
                 raise Exception(f"Unrecognized French month name: {french_month}")
 
-            # Extract column headers (day name + day number)
             header_cells = self.driver.find_elements(By.XPATH, "//tr[contains(@class,'fondTresClair')]/td[position()>1]")
             days = []
             for i, cell in enumerate(header_cells):
-                text = cell.text.strip()
-                match = re.match(r"(\w+)\s+(\d{2})", text)
+                text = cell.text.strip().replace('\xa0', ' ')
+                match = re.match(r"(\w+)\s+(\d{1,2})", text)
                 if match:
                     day_name, day_num = match.groups()
                     full_date = datetime(int(year), month, int(day_num)).strftime("%Y-%m-%d")
                     days.append((day_name, full_date))
                 else:
-                    days.append((f"Day{i}", None))  # fallback if missing
+                    days.append((f"Day{i}", None))
+
+            self.logger.info(f"Detected days for scraping are {days}.")
 
             planning = []
 
             # Traverse planning rows
             rows = self.driver.find_elements(By.XPATH, "//tr[td[@bgcolor='#DDDDDD']]")
+            self.logger.info(f"Found {len(rows)} rows to process.")
+            
             for row in rows:
                 try:
                     cells = row.find_elements(By.XPATH, "./td")
-                    if len(cells) < 8:
+                    if len(cells) < len(days) + 1:
                         continue
-                    time_slot = cells[0].text.strip()
 
                     for i, (day_name, date_str) in enumerate(days):
                         if date_str is None: continue
-                        container_cells = cells[i + 1].find_elements(By.XPATH, ".//td[@class='GEDcellsouscategorie']")
-                        for course_cell in container_cells:
-                            try:
-                                try:
-                                    title_element = course_cell.find_element(By.TAG_NAME, 'b')
-                                    title = title_element.text.strip()
-                                except NoSuchElementException:
-                                    self.logger.warning(f"No title element found in course cell at {date_str} {time_slot}")
-                                    title = "Unknown Title"
+                        
+                        course_cell = cells[i + 1]
+                        
+                        bgcolor = course_cell.get_attribute('bgcolor')
+                        if not bgcolor or bgcolor.lower() == '#ededed':
+                            continue
+                        
+                        try:
+                            # Check for the bold tag to confirm it's a course title cell.
+                            title_element = course_cell.find_element(By.TAG_NAME, 'b')
+                            title = title_element.text.strip().replace(' ', ' ')
 
-                                font_elements = course_cell.find_elements(By.TAG_NAME, 'font')
-                                start_time_obj = end_time_obj = teacher = room = group = ""
-                                values = [e.text.strip() for e in font_elements if e.text.strip()]
+                            all_text_parts = course_cell.text.split('\n')
+                            
+                            start_time_obj, end_time_obj = None, None
+                            teachers = []
+                            room, group = "", ""
 
-                                if values and '-' in values[0]:
-                                    try:
-                                        start_time, end_time = map(str.strip, values[0].split('-'))
-                                        start_time_obj = datetime.strptime(f"{date_str} {start_time}", "%Y-%m-%d %H:%M")
-                                        end_time_obj = datetime.strptime(f"{date_str} {end_time}", "%Y-%m-%d %H:%M")
-                                    except ValueError:
-                                        self.logger.warning(f"Invalid time format in course cell at {date_str} {time_slot}: {values[0]}")
+                            for part in all_text_parts:
+                                time_match = re.search(r'(\d{2})H(\d{2})-(\d{2})H(\d{2})', part)
+                                if time_match:
+                                    start_h, start_m, end_h, end_m = time_match.groups()
+                                    start_time_obj = datetime.strptime(f"{date_str} {start_h}:{start_m}", "%Y-%m-%d %H:%M")
+                                    end_time_obj = datetime.strptime(f"{date_str} {end_h}:{end_m}", "%Y-%m-%d %H:%M")
+                                    continue
+                                
+                                if re.search(r"\bFISE|FIT|FIL|PROMO|GPE|ANNÉE|LV1|DEMI\b", part, re.IGNORECASE):
+                                    group = part
+                                    continue
+                                
+                                if re.match(r"^[A-Z]{2,}-.*", part) or '(' in part:
+                                    room = part
+                                    continue
 
-                                for val in values[1:]:
-                                    if re.search(r"\bFISE|FIT|FIL|PROMO|GPE|ANNÉE\b", val, re.IGNORECASE):
-                                        group = val
-                                    elif re.match(r"^[A-Z]{2,}-[A-Z0-9]+", val) or '(' in val:
-                                        room = val
-                                    elif len(val.split()) > 1 and all(word[0].isupper() for word in val.replace(' ', ' ').split()):
-                                        teacher = val.replace(" ", " ")
+                                # Match names, but exclude the title itself.
+                                if part != title and re.fullmatch(r"[A-Z'’\s-]+ [A-Z][a-z'’-]+", part, re.IGNORECASE):
+                                    teachers.append(part)
 
-                                if title != "Unknown Title":
-                                    planning.append({
-                                        'date': date_str,
-                                        'title': title,
-                                        'start_time': start_time_obj,
-                                        'end_time': end_time_obj,
-                                        'teacher': teacher,
-                                        'room': room,
-                                        'group': group
-                                    })
+                            planning.append({
+                                'date': date_str,
+                                'title': title,
+                                'start_time': start_time_obj,
+                                'end_time': end_time_obj,
+                                'teacher': ", ".join(teachers),
+                                'room': room,
+                                'group': group
+                            })
 
-                            except Exception as e:
-                                self.logger.warning(f"Failed to parse course cell at {date_str} {time_slot}: {e}")
+                        except NoSuchElementException:
+                            # This cell has a color but no <b> tag, so it's likely a continued event (due to rowspan). Skip it.
+                            continue
+                        except Exception as e:
+                            self.logger.warning(f"Error parsing course cell on {date_str}: {e}")
                 except Exception as e:
                     self.logger.warning(f"Failed to parse row: {e}")
+
+            # Remove duplicate course in list.
+            unique_planning = []
+            seen = set()
+            for d in planning:
+                # Create a tuple of the course's identifying info.
+                course_tuple = (d['date'], d['title'], d['teacher'], d['room'], d['group'], d['start_time'])
+
+                if course_tuple not in seen:
+                    unique_planning.append(d)
+                    seen.add(course_tuple)
+            
+            self.logger.info(f"Found and parsed {len(unique_planning)} unique course entries.")
 
             return {
                 'url': result_url,
                 'scraped_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'planning': planning
+                'planning': unique_planning
             }
 
         except Exception as e:
-            self.logger.error(f"Error in step 6: {e}")
-            # Save a screenshot on error for easier debugging.
+            self.logger.error(f"CRITICAL ERROR in step 6: {e}", exc_info=True)
             ts = datetime.now().strftime('%Y%m%d_%H%M%S')
             error_screenshot_path = os.path.join('data', f'step6_error_{ts}.png')
             try:
@@ -640,7 +664,7 @@ class TransatPassScraper:
                 self.logger.error(f"Could not save error screenshot: {e_ss}")
 
             return {'error': str(e)}
-    
+        
     def step8_send_courses_to_api(self, planning, user_id, transat_api_email, transat_api_password):
         """
         Step 8: Send each course in planning to the API
@@ -676,11 +700,11 @@ class TransatPassScraper:
         Run the complete scraping flow for all users from the API.
         
         Args:
-            username (str): Login username for the PASS account.
-            password (str): Login password for the PASS account.
+            pass_username (str): Login username for the PASS account.
+            pass_password (str): Login password for the PASS account.
             
         Returns:
-            dict: A summary of the scraping process.
+            dict: A summary of the scraping process including all plannings.
         """
         try:
             self.logger.info("Starting complete scraping flow for all users!")
@@ -700,11 +724,11 @@ class TransatPassScraper:
                 self.logger.error(f"API authentication failed: {e}")
                 return {'error': f'API authentication failed: {e}'}
             
-            # Step 1: Select authentication mode
+            # Step 1: Select authentication mode.
             if not self.step1_select_auth_mode():
                 return {'error': 'Failed at step 1: Auth mode selection'}
             
-            # Step 2: Login
+            # Step 2: Login.
             if not self.step2_login(pass_username, pass_password):
                 return {'error': 'Failed at step 2: Login'}
             
@@ -720,14 +744,21 @@ class TransatPassScraper:
                 self.logger.error(f"Failed to get users from API: {e}")
                 return {'error': f"Failed to get users from API: {e}"}
 
-            results = {'processed': 0, 'success': 0, 'failed': 0, 'failures': []}
+            # Initialize results with a dictionary to hold all plannings, keyed by pass_id.
+            results = {
+                'processed': 0, 
+                'success': 0, 
+                'failed': 0, 
+                'failures': [], 
+                'all_plannings': {}
+            }
 
             # Loop through each user.
             for user in all_users:
                 user_id = user.get('id')
                 first_name = user.get('first_name', '').strip()
                 last_name = user.get('last_name', '').strip()
-                pass_id = user.get('pass_id')
+                cached_pass_id = user.get('pass_id')
                 
                 results['processed'] += 1
                 self.logger.info(f"--- Processing user #{user_id}: {first_name} {last_name} ---")
@@ -735,16 +766,17 @@ class TransatPassScraper:
                 try:
                     result_url = None
                     # Check if pass_id is cached.
-                    if pass_id:
-                        self.logger.info(f"User has a cached pass_id: {pass_id}. Skipping search.")
-                        result_url = f"https://pass.imt-atlantique.fr/OpDotNet/eplug/Annuaire/Navigation/Dossier/Dossier.aspx?IdObjet={pass_id}&IdTypeObjet=25&IdAnn=&IdProfil=&AccesPerso=false&Wizard="
+                    if cached_pass_id:
+                        self.logger.info(f"User has a cached pass_id: {cached_pass_id}. Skipping search.")
+                        result_url = f"https://pass.imt-atlantique.fr/OpDotNet/eplug/Annuaire/Navigation/Dossier/Dossier.aspx?IdObjet={cached_pass_id}&IdTypeObjet=25&IdAnn=&IdProfil=&AccesPerso=false&Wizard="
                     else:
                         self.logger.info("User has no pass_id. Searching for user...")
-                        # Step 3: Navigate to search page
+                        
+                        # Step 3: Navigate to search page.
                         if not self.step3_navigate_to_search():
                             raise Exception('Failed at step 3: Navigation')
                         
-                        # Step 4: Search for person
+                        # Step 4: Search for person.
                         if not self.step4_search_person(first_name, last_name):
                             raise Exception(f'Failed at step 4: Search for {first_name} {last_name}')
                         
@@ -752,8 +784,8 @@ class TransatPassScraper:
                         result_url = self.step5_get_result_link(first_name, last_name, user_id)
                         if not result_url:
                             raise Exception(f'Failed at step 5: No result link found for {first_name} {last_name}')
-                    
-                    # Step 6: Scrape data
+
+                    # Step 6: Scrape data.
                     scraped_data = self.step6_scrape_data(result_url)
                     if 'error' in scraped_data:
                         raise Exception(f"Failed at step 6: Scraping data. Error: {scraped_data['error']}")
@@ -770,23 +802,24 @@ class TransatPassScraper:
                            self.logger.info(f"Step 8: Successfully sent all courses for user {user_id} to API.")
                     else:
                         self.logger.info(f"No planning data found for user {user_id} to send to API.") """
-                    
-                    self.logger.info(f"--- Successfully processed user #{user_id}: {first_name} {last_name} ---")
+
+                    # Store the scraped data in the `all_plannings` dict using pass_id as the key.
+                    results['all_plannings'][user_id] = scraped_data
                     results['success'] += 1
-                    results['planning'] = scraped_data
+                    self.logger.info(f"--- Successfully processed user #{user_id} ---")
 
                 except Exception as e:
                     self.logger.error(f"!!! Failed to process user #{user_id}: {first_name} {last_name}. Error: {e} !!!")
                     results['failed'] += 1
                     results['failures'].append({'user_id': user_id, 'name': f"{first_name} {last_name}", 'error': str(e)})
-                    # Continue to the next user in the loop
+                    # Continue to the next user in the loop.
                     continue
 
             self.logger.info("Complete scraping flow for all users finished.")
             self.logger.info(f"Summary: {results}")
             return results
         except Exception as e:
-            self.logger.error(f"Error in complete scraping flow: {e}")
+            self.logger.error(f"Error in complete scraping flow: {e}", exc_info=True)
             return {'error': f'Complete flow failed: {str(e)}'}
     
     def close(self):
