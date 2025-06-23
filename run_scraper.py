@@ -62,8 +62,8 @@ def run_scraper():
     
         # Run scraping
         result = scraper.run_full_scrape(
-            username=Config.PASS_USERNAME,
-            password=Config.PASS_PASSWORD
+            pass_username=Config.PASS_USERNAME,
+            pass_password=Config.PASS_PASSWORD
         )
         
         # Add metadata

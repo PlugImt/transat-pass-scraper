@@ -604,12 +604,12 @@ class TransatPassScraper:
             self.logger.error(f"Error in step 6: {e}")
             return {'error': str(e)}
     
-    def step8_send_courses_to_api(self, planning, TEMPORARY_USER_EMAIL, transat_api_email, transat_api_password):
+    def step8_send_courses_to_api(self, planning, user_id, transat_api_email, transat_api_password):
         """
         Step 8: Send each course in planning to the API
         Args:
             planning (list): List of course dicts
-            TEMPORARY_USER_EMAIL (str): Email of the user whose planning it is
+            user_id (int): ID of the user whose planning it is
             transat_api_email (str): Email for API authentication
             transat_api_password (str): Password for API authentication
         """
@@ -625,28 +625,28 @@ class TransatPassScraper:
         success_count = 0
         for course in planning:
             course_payload = course.copy()
-            course_payload["TEMPORARY_USER_EMAIL"] = TEMPORARY_USER_EMAIL
+            course_payload["user_id"] = user_id
             try:
                 client.post_course(course_payload)
                 success_count += 1
             except Exception as e:
                 self.logger.error(f"Failed to send course to API: {course_payload} | Error: {e}")
-        self.logger.info(f"Step 8: Sent {success_count}/{len(planning)} courses to API.")
+        self.logger.info(f"Step 8: Sent {success_count}/{len(planning)} courses to API for user {user_id}.")
         return success_count == len(planning)
-    
-    def run_full_scrape(self, username, password):
+
+    def run_full_scrape(self, pass_username, pass_password):
         """
-        Run the complete scraping flow
+        Run the complete scraping flow for all users from the API.
         
         Args:
-            username (str): Login username
-            password (str): Login password
+            username (str): Login username for the PASS account.
+            password (str): Login password for the PASS account.
             
         Returns:
-            dict: Scraped data or error information
+            dict: A summary of the scraping process.
         """
         try:
-            self.logger.info("Starting complete scraping flow")
+            self.logger.info("Starting complete scraping flow for all users!")
             
             # Step 0: Authenticate to API before starting scraping.
             TRANSAT_API_EMAIL = Config.TRANSAT_API_EMAIL
@@ -655,6 +655,7 @@ class TransatPassScraper:
             client = ApiClient()
             try:
                 client.authenticate(TRANSAT_API_EMAIL, TRANSAT_API_PASSWORD)
+                self.logger.info("Successfully authenticated with the API.")
             except requests.exceptions.ConnectionError as e:
                 self.logger.error(f"API connection error: {e}. Is the API server running at {client.base_api_url}?")
                 return {'error': f'API connection error: {e}. Is the API server running at {client.base_api_url}?'}
@@ -667,39 +668,85 @@ class TransatPassScraper:
                 return {'error': 'Failed at step 1: Auth mode selection'}
             
             # Step 2: Login
-            if not self.step2_login(username, password):
+            if not self.step2_login(pass_username, pass_password):
                 return {'error': 'Failed at step 2: Login'}
             
             # Step 2b: Handle SAML POST SSO if present
             if not self.step2b_handle_saml_post_sso():
                 return {'error': 'Failed at step 2b: SAML POST SSO'}
-            
-            # Step 3: Navigate to search page
-            if not self.step3_navigate_to_search():
-                return {'error': 'Failed at step 3: Navigation'}
-            
-            # # Step 4: Search for person
-            if not self.step4_search_person("chavanel", "yohann"):
-                 return {'error': 'Failed at step 4: Search'}
-            
-            # Step 5: Get result link
-            result_url = self.step5_get_result_link("chavanel", "yohann", Config.TEMPORARY_USER_ID)
-            if not result_url:
-                 return {'error': 'Failed at step 5: No result link found'}
-            
-            # Step 6: Scrape data
-            # scraped_data = self.step6_scrape_data(result_url)
-            
-            # print(scraped_data)
 
-            # Step 7: Optimize scraped data.
+            # Get all users from the API.
+            try:
+                all_users = client.get_all_users()
+                self.logger.info(f"Retrieved {len(all_users)} users from the API.")
+            except Exception as e:
+                self.logger.error(f"Failed to get users from API: {e}")
+                return {'error': f"Failed to get users from API: {e}"}
 
-            # Step 8: Send courses to API
-            #if 'planning' in scraped_data and scraped_data['planning']:
-            #    self.step8_send_courses_to_api(scraped_data['planning'], Config.#TEMPORARY_USER_EMAIL, TRANSAT_API_EMAIL, TRANSAT_API_PASSWORD)
-            
-            self.logger.info("Complete scraping flow finished successfully")
-            # return scraped_data
+            results = {'processed': 0, 'success': 0, 'failed': 0, 'failures': []}
+
+            # Loop through each user.
+            for user in all_users:
+                user_id = user.get('id')
+                first_name = user.get('first_name', '').strip()
+                last_name = user.get('last_name', '').strip()
+                pass_id = user.get('pass_id')
+                
+                results['processed'] += 1
+                self.logger.info(f"--- Processing user #{user_id}: {first_name} {last_name} ---")
+
+                try:
+                    result_url = None
+                    # Check if pass_id is cached.
+                    if pass_id:
+                        self.logger.info(f"User has a cached pass_id: {pass_id}. Skipping search.")
+                        result_url = f"https://pass.imt-atlantique.fr/OpDotNet/eplug/Annuaire/Navigation/Dossier/Dossier.aspx?IdObjet={pass_id}&IdTypeObjet=25&IdAnn=&IdProfil=&AccesPerso=false&Wizard="
+                    else:
+                        self.logger.info("User has no pass_id. Searching for user...")
+                        # Step 3: Navigate to search page
+                        if not self.step3_navigate_to_search():
+                            raise Exception('Failed at step 3: Navigation')
+                        
+                        # Step 4: Search for person
+                        if not self.step4_search_person(first_name, last_name):
+                            raise Exception(f'Failed at step 4: Search for {first_name} {last_name}')
+                        
+                        # Step 5: Get result link (and cache pass_id)
+                        result_url = self.step5_get_result_link(first_name, last_name, user_id)
+                        if not result_url:
+                            raise Exception(f'Failed at step 5: No result link found for {first_name} {last_name}')
+                    
+                    # Step 6: Scrape data
+                    """ scraped_data = self.step6_scrape_data(result_url)
+                    if 'error' in scraped_data:
+                        raise Exception(f"Failed at step 6: Scraping data. Error: {scraped_data['error']}")
+                    
+                    # print(scraped_data)
+
+                    # Step 7: Optimize scraped data
+
+                    # Step 8: Send courses to API
+                    if 'planning' in scraped_data and scraped_data['planning']:
+                        if not self.step8_send_courses_to_api(scraped_data['planning'], user_id, TRANSAT_API_EMAIL, TRANSAT_API_PASSWORD):
+                           self.logger.warning(f"Step 8: Not all courses were sent to API for user {user_id}.")
+                        else:
+                           self.logger.info(f"Step 8: Successfully sent all courses for user {user_id} to API.")
+                    else:
+                        self.logger.info(f"No planning data found for user {user_id} to send to API.") """
+                    
+                    self.logger.info(f"--- Successfully processed user #{user_id}: {first_name} {last_name} ---")
+                    results['success'] += 1
+
+                except Exception as e:
+                    self.logger.error(f"!!! Failed to process user #{user_id}: {first_name} {last_name}. Error: {e} !!!")
+                    results['failed'] += 1
+                    results['failures'].append({'user_id': user_id, 'name': f"{first_name} {last_name}", 'error': str(e)})
+                    # Continue to the next user in the loop
+                    continue
+
+            self.logger.info("Complete scraping flow for all users finished.")
+            self.logger.info(f"Summary: {results}")
+            return results
         except Exception as e:
             self.logger.error(f"Error in complete scraping flow: {e}")
             return {'error': f'Complete flow failed: {str(e)}'}
