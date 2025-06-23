@@ -13,6 +13,7 @@ import re
 from config import Config
 from api_client import ApiClient
 from datetime import datetime
+from steps.step7_optimize_planning import step7_optimize_planning
 
 class TransatPassScraper:
     def __init__(self, headless=False, timeout=10):
@@ -792,7 +793,13 @@ class TransatPassScraper:
                     
                     # print(scraped_data)
 
-                    # Step 7: Optimize scraped data
+                    # Step 7: Optimize scraped data by merging consecutive courses.
+                    if 'planning' in scraped_data and scraped_data['planning']:
+                        self.logger.info(f"Step 7: Optimizing planning for user {user_id}.")
+                        optimized_planning = step7_optimize_planning(scraped_data['planning'])
+                        scraped_data['planning'] = optimized_planning
+                    else:
+                        self.logger.info(f"Step 7: No planning data to optimize for user {user_id}.")
 
                     """# Step 8: Send courses to API
                     if 'planning' in scraped_data and scraped_data['planning']:
