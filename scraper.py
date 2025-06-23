@@ -491,7 +491,6 @@ class TransatPassScraper:
         except Exception as e:
             self.logger.error(f"Unexpected error in step5b_cache_pass_id: {e}")
 
-
     def step6_scrape_data(self, result_url):
         try:
             self.logger.info("Step 6: Navigating to result page and scraping data")
@@ -548,31 +547,47 @@ class TransatPassScraper:
                         container_cells = cells[i + 1].find_elements(By.XPATH, ".//td[@class='GEDcellsouscategorie']")
                         for course_cell in container_cells:
                             try:
-                                title = course_cell.find_element(By.TAG_NAME, 'b').text.strip()
+                                try:
+                                    title_element = course_cell.find_element(By.TAG_NAME, 'b')
+                                    title = title_element.text.strip()
+                                except NoSuchElementException:
+                                    self.logger.warning(f"No title element found in course cell at {date_str} {time_slot}")
+                                    title = "Unknown Title"
+
                                 font_elements = course_cell.find_elements(By.TAG_NAME, 'font')
                                 start_time = end_time = teacher = room = group = ""
                                 values = [e.text.strip() for e in font_elements]
 
                                 if values and '-' in values[0]:
-                                    start_time, end_time = map(str.strip, values[0].split('-'))
+                                    try:
+                                        start_time, end_time = map(str.strip, values[0].split('-'))
+                                        start_time = datetime.strptime(f"{date_str} {start_time}", "%Y-%m-%d %H:%M")
+                                        end_time = datetime.strptime(f"{date_str} {end_time}", "%Y-%m-%d %H:%M")
+                                    except ValueError:
+                                        self.logger.warning(f"Invalid time format in course cell at {date_str} {time_slot}")
 
                                 for val in values[1:]:
                                     if re.search(r"\bFISE|FIT|FIL|PROMO|GPE|ANNÉE\b", val, re.IGNORECASE):
                                         group = val
                                     elif re.match(r"^[A-Z]{2}-[A-Z0-9]+", val) or '(' in val:
                                         room = val
-                                    elif re.match(r"[A-Z][a-z]+ [A-Z][a-z]+", val):
+                                    elif re.match(r"[A-Z]+\s*&nbsp;\s*[A-Z][a-z]+", val):
+                                        teacher = val.replace("&nbsp;", " ")
+                                    elif re.match(r"[A-Z][a-z]+\s+[A-Z][a-z]+", val):
                                         teacher = val
 
-                                planning.append({
-                                    'date': date_str,
-                                    'title': title,
-                                    'start_time': start_time,
-                                    'end_time': end_time,
-                                    'teacher': teacher,
-                                    'room': room,
-                                    'group': group
-                                })
+                                if not any([start_time, end_time, teacher, room, group]):
+                                    self.logger.warning(f"Incomplete data for course cell at {date_str} {time_slot}")
+                                else:
+                                    planning.append({
+                                        'date': date_str,
+                                        'title': title,
+                                        'start_time': start_time,
+                                        'end_time': end_time,
+                                        'teacher': teacher,
+                                        'room': room,
+                                        'group': group
+                                    })
 
                             except Exception as e:
                                 self.logger.warning(f"Failed to parse course cell at {date_str} {time_slot}: {e}")
@@ -673,16 +688,18 @@ class TransatPassScraper:
                  return {'error': 'Failed at step 5: No result link found'}
             
             # Step 6: Scrape data
-            scraped_data = self.step6_scrape_data(result_url)
+            # scraped_data = self.step6_scrape_data(result_url)
             
-            # Step 7: (optional) Any post-processing here
+            # print(scraped_data)
+
+            # Step 7: Optimize scraped data.
 
             # Step 8: Send courses to API
-            if 'planning' in scraped_data and scraped_data['planning']:
-                self.step8_send_courses_to_api(scraped_data['planning'], Config.TEMPORARY_USER_EMAIL, TRANSAT_API_EMAIL, TRANSAT_API_PASSWORD)
+            #if 'planning' in scraped_data and scraped_data['planning']:
+            #    self.step8_send_courses_to_api(scraped_data['planning'], Config.#TEMPORARY_USER_EMAIL, TRANSAT_API_EMAIL, TRANSAT_API_PASSWORD)
             
             self.logger.info("Complete scraping flow finished successfully")
-            return scraped_data
+            # return scraped_data
         except Exception as e:
             self.logger.error(f"Error in complete scraping flow: {e}")
             return {'error': f'Complete flow failed: {str(e)}'}
