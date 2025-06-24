@@ -191,6 +191,17 @@ def step6_scrape_planning(driver, profile_url: str, timeout:int=10):
         WebDriverWait(driver, timeout).until(EC.frame_to_be_available_and_switch_to_it((By.ID, "frm1")))
         logger.info("Switched to iframe 'frm1'.")
         
+        # XPath for the navigation arrows, which act as our signal that the page is ready.
+        nav_arrow_xpath = "//a[contains(@onclick, 'NavDat')]"
+
+        # Wait for the navigation arrows to be present on the initial load.
+        # This ensures NavDat() is defined before we try to call it the first time.
+        logger.info("Waiting for initial agenda to load completely...")
+        WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((By.XPATH, nav_arrow_xpath))
+        )
+        logger.info("Initial agenda loaded. Starting weekly scrape.")
+
         mondays_to_scrape = _get_mondays_to_scrape()
         logger.info(f"Will scrape {len(mondays_to_scrape)} weeks, starting from Mondays: {mondays_to_scrape}")
 
@@ -199,8 +210,12 @@ def step6_scrape_planning(driver, profile_url: str, timeout:int=10):
             logger.info(f"Scraping week {i+1}/{len(mondays_to_scrape)} (starting {monday_str})...")
             # Use JavaScript to navigate directly to the week.
             driver.execute_script(f"NavDat('{monday_str}');")
-            # Wait for the page to refresh after the JS call.
-            time.sleep(3)
+
+            # IMPORTANT: After executing the script, the page reloads. We MUST wait again
+            # for our signal (the nav arrows) to reappear before we try to scrape.
+            WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((By.XPATH, nav_arrow_xpath))
+            )
 
             week_courses = _scrape_single_week(driver, timeout=timeout)
             if week_courses:
