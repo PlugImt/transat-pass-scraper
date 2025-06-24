@@ -4,7 +4,7 @@ import logging
 # Set up a logger for this module. It will inherit the root logger's configuration.
 logger = logging.getLogger(__name__)
 
-def step7_optimize_planning(planning_data, max_break_minutes=30):
+def step7_optimize_planning(planning_data, max_break_minutes:int=30):
     """
     Optimizes a list of planning events by merging consecutive courses.
 
