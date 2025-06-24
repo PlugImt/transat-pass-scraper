@@ -5,7 +5,7 @@ import time
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 from datetime import datetime
 import os
 
@@ -85,20 +85,26 @@ def _scrape_single_week(driver, timeout:int) -> list:
                 days.append((f"Day{i}", None))
 
         logger.info(f"Detected days for scraping are {days}.")
-        
         # Traverse planning rows.
-        rows = driver.find_elements(By.XPATH, "//tr[td[@bgcolor='#DDDDDD']]")
-        logger.info(f"Found {len(rows)} rows to process.")
+        rows_xpath = "//tr[td[@bgcolor='#DDDDDD']]"
+        num_rows = len(driver.find_elements(By.XPATH, rows_xpath))
+        logger.info(f"Found {num_rows} rows to process.")
 
-        for row in rows:
-            try:        
+        # Loop using an index (from 0 to num_rows-1).
+        for i in range(num_rows):
+            try:
+                # Inside the loop, find the SPECIFIC row by its index.
+                # XPath indexes are 1-based, so we use i + 1.
+                # This re-acquires the element fresh on every single iteration.
+                row = driver.find_element(By.XPATH, f"({rows_xpath})[{i+1}]")
+                
                 cells = row.find_elements(By.XPATH, "./td")
                 if len(cells) < len(days) + 1: continue
 
-                for i, (day_name, date_str) in enumerate(days):
+                for j, (day_name, date_str) in enumerate(days):
                     if date_str is None: continue
                     
-                    course_cell = cells[i + 1]
+                    course_cell = cells[j + 1]
 
                     bgcolor = course_cell.get_attribute('bgcolor')
                     if not bgcolor or bgcolor.lower() == '#ededed':
@@ -143,22 +149,27 @@ def _scrape_single_week(driver, timeout:int) -> list:
                         continue # Skip cells that are colored but have no title (e.g., rowspan continuation)
                     except Exception as e:
                         logger.warning(f"Error parsing course cell on {date_str}: {e}")
+
+            # Catch the specific exception. If a row becomes stale even during this
+            # short time, we can log it and safely continue to the next index.
+            except StaleElementReferenceException:
+                logger.warning(f"Row at index {i} became stale. Skipping.")
+                continue
             except Exception as e:
-                logger.warning(f"Failed to parse row: {e}")
+                logger.warning(f"Failed to parse row at index {i}: {e}")
 
         return planning_of_the_week
     except Exception as e:
         logger.error(f"Critical error while scraping a single week: {e}", exc_info=True)
         return []
 
-# Main function to be called from the scraper.
-def step6_scrape_planning(driver, profile_url: str, timeout:int=10):
+def step6_scrape_planning(driver, profile_url: str, timeout:int=30):
     """
     Navigates to a user's agenda and scrapes their planning for a 9-week period.
+    Modifies the navigation arrow's onclick attribute and then clicks it.
     
     Args:
         driver: The Selenium WebDriver instance.
-        logger: The logging instance.
         profile_url (str): The URL of the user's profile page.
         timeout (int): Timeout for web driver waits.
         
@@ -168,7 +179,7 @@ def step6_scrape_planning(driver, profile_url: str, timeout:int=10):
     try:
         logger.info(f"Step 6: Navigating to user planning page {profile_url}")
         driver.get(profile_url)
-        time.sleep(3) # Allow page to settle
+        time.sleep(5)
 
         if "Dossier.aspx?IdObjet=" not in driver.current_url:
             return {'error': f'Failed to navigate to user profile. URL: {driver.current_url}'}
@@ -176,26 +187,23 @@ def step6_scrape_planning(driver, profile_url: str, timeout:int=10):
         logger.info("On user profile page. Clicking 'Agenda' tab.")
         driver.switch_to.default_content()
 
-        # XPath to find the tab containing the text "Agenda" and click it.
         agenda_tab_xpath = "//nobr[text()='Agenda']/ancestor::table[contains(@onclick, 'ComponentArt_TabStrip_TabClick')]"
         try:
             WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((By.XPATH, agenda_tab_xpath))).click()
             logger.info("Clicked the 'Agenda' tab.")
-            time.sleep(3) # Wait for the iframe content to start loading.
+            time.sleep(5) 
         except TimeoutException:
             logger.error("Could not find or click the 'Agenda' tab.")
             return {'error': "Could not find or click the 'Agenda' tab."}
 
-        # Now, wait for the correct iframe for the agenda (frm1) and switch to it.
         logger.info("Switching to agenda iframe 'frm1'.")
         WebDriverWait(driver, timeout).until(EC.frame_to_be_available_and_switch_to_it((By.ID, "frm1")))
         logger.info("Switched to iframe 'frm1'.")
         
-        # XPath for the navigation arrows, which act as our signal that the page is ready.
-        nav_arrow_xpath = "//a[contains(@onclick, 'NavDat')]"
+        # Use the right arrow to navigate.
+        # This also serves as our element to wait for after a page refresh.
+        nav_arrow_xpath = "//*[@id='DivVis']/table/tbody/tr[1]/td[3]/a"
 
-        # Wait for the navigation arrows to be present on the initial load.
-        # This ensures NavDat() is defined before we try to call it the first time.
         logger.info("Waiting for initial agenda to load completely...")
         WebDriverWait(driver, timeout).until(
             EC.presence_of_element_located((By.XPATH, nav_arrow_xpath))
@@ -208,26 +216,41 @@ def step6_scrape_planning(driver, profile_url: str, timeout:int=10):
         all_courses = []
         for i, monday_str in enumerate(mondays_to_scrape):
             logger.info(f"Scraping week {i+1}/{len(mondays_to_scrape)} (starting {monday_str})...")
-            # Use JavaScript to navigate directly to the week.
-            driver.execute_script(f"NavDat('{monday_str}');")
+            try:
+                # Find the navigation arrow we will use.
+                arrow_element = WebDriverWait(driver, timeout).until(
+                    EC.presence_of_element_located((By.XPATH, nav_arrow_xpath))
+                )
 
-            # IMPORTANT: After executing the script, the page reloads. We MUST wait again
-            # for our signal (the nav arrows) to reappear before we try to scrape.
-            WebDriverWait(driver, timeout).until(
-                EC.presence_of_element_located((By.XPATH, nav_arrow_xpath))
-            )
+                # Use JavaScript to change the 'onclick' attribute to our desired date.
+                js_change_attribute = f"arguments[0].setAttribute('onclick', \"NavDat('{monday_str}');return false;\");"
+                driver.execute_script(js_change_attribute, arrow_element)
+                logger.info(f"Set arrow's onclick to navigate to {monday_str}.")
+
+                # Click the now-modified arrow to trigger the navigation.
+                arrow_element.click()
+                logger.info("Clicked the arrow to load the new week.")
+
+                # Wait for the navigation to complete. We wait for the arrow 
+                # to be present again after the refresh.
+                # This prevents the "NavDat is not defined" or stale element errors.
+                WebDriverWait(driver, timeout).until(
+                    EC.presence_of_element_located((By.XPATH, nav_arrow_xpath))
+                )
+                logger.info("New week's content has loaded.")
+
+            except Exception as nav_error:
+                logger.error(f"Failed to navigate to week starting {monday_str}: {nav_error}")
+                continue 
 
             week_courses = _scrape_single_week(driver, timeout=timeout)
             if week_courses:
                 all_courses.extend(week_courses)
         
-        # Remove duplicate course in list.
         unique_planning = []
         seen = set()
         for d in all_courses:
-            # Create a tuple of the course's identifying info.
             course_tuple = (d['date'], d['title'], d['teacher'], d['room'], d['group'], d['start_time'])
-
             if course_tuple not in seen:
                 unique_planning.append(d)
                 seen.add(course_tuple)
