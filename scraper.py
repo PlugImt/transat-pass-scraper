@@ -557,6 +557,7 @@ class TransatPassScraper:
                 user_id = user.get('id')
                 first_name = user.get('first_name', '').strip()
                 last_name = user.get('last_name', '').strip()
+                email = user.get('email', '').strip()
                 cached_pass_id = user.get('pass_id')
                 
                 results['processed'] += 1
@@ -597,30 +598,21 @@ class TransatPassScraper:
                     else:
                         self.logger.info(f"Step 7: No planning data to optimize for user {user_id}.")
 
-                    """# Step 8: Send courses to API
-                    if not send_courses_to_api(optimized_courses, user_id, client):
-                       self.logger.warning(f"Not all courses were sent to API for user {user_id}.")
-
-                    # Store final data for reporting
-                    results['all_plannings'][user_id] = {
-                        'url': profile_url,
-                        'scraped_at': scraped_result['scraped_at'],
-                        'planning': optimized_courses
-                    }
-                    results['success'] += 1
-                    self.logger.info(f"--- Successfully processed user #{user_id} ---")
-
                     # Step 8: Send courses to API
                     if 'planning' in scraped_data and scraped_data['planning']:
-                        if not self.step8_send_courses_to_api(scraped_data['planning'], user_id, TRANSAT_API_EMAIL, TRANSAT_API_PASSWORD):
-                           self.logger.warning(f"Step 8: Not all courses were sent to API for user {user_id}.")
+                        if not step8_submit_to_api(scraped_data['planning'], email, client):
+                            self.logger.warning(f"Not all courses were sent to API for user {user_id}.")
                         else:
                            self.logger.info(f"Step 8: Successfully sent all courses for user {user_id} to API.")
                     else:
-                        self.logger.info(f"No planning data found for user {user_id} to send to API.") """
+                        self.logger.info(f"No planning data found for user {user_id} to send to API.")
 
-                    # Store the scraped data in the `all_plannings` dict using pass_id as the key.
-                    results['all_plannings'][user_id] = scraped_data
+                    # Store final data for reporting
+                    results['all_plannings'][user_id] = {
+                        'url': result_url,
+                        'scraped_at': scraped_data['scraped_at'],
+                        'planning': optimized_planning
+                    }
                     results['success'] += 1
                     self.logger.info(f"--- Successfully processed user #{user_id} ---")
 
