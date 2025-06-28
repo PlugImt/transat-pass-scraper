@@ -237,10 +237,30 @@ def step6_scrape_planning(driver, profile_url: str, timeout:int=30):
                 WebDriverWait(driver, timeout).until(
                     EC.presence_of_element_located((By.XPATH, nav_arrow_xpath))
                 )
-                logger.info("New week's content has loaded.")
+                logger.info("New week's content has loaded. Stabilizing page...")
+                # Add a small buffer for JS rendering, then dezoom/scroll to stabilize the view.
+                time.sleep(1)
+                try:
+                    logger.info("De-zooming page and scrolling to ensure full visibility.")
+                    driver.execute_script("document.body.style.zoom='100%'")
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(0.5)
+                    driver.execute_script("window.scrollTo(0, 0);")
+                except Exception as e:
+                    logger.warning(f"Could not execute dezoom/scroll script: {e}")
+
+                # Take a screenshot before scraping the week for debugging.
+                try:
+                    screenshot_dir = 'data/debug_screenshots'
+                    os.makedirs(screenshot_dir, exist_ok=True)
+                    screenshot_path = os.path.join(screenshot_dir, f'week_{monday_str}.png')
+                    driver.get_screenshot_as_file(screenshot_path)
+                    logger.info(f"Saved pre-scrape screenshot to {screenshot_path}")
+                except Exception as e_ss:
+                    logger.error(f"Could not save screenshot for week {monday_str}: {e_ss}")
 
             except Exception as nav_error:
-                logger.error(f"Failed to navigate to week starting {monday_str}: {nav_error}")
+                logger.error(f"Failed to navigate to week starting {monday_str}: {nav_error}", exc_info=True)
                 continue 
 
             week_courses = _scrape_single_week(driver, timeout=timeout)
